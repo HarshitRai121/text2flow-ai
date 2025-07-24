@@ -1,11 +1,12 @@
 // src/utils/constants.js
 
-// Function to generate a unique ID for diagram elements
 export const generateUniqueId = () => crypto.randomUUID();
 
-// Canvas dimensions
 export const CANVAS_WIDTH = 800;
 export const CANVAS_HEIGHT = 500;
+
+// Size of the resize handles (small squares at corners/midpoints)
+export const RESIZE_HANDLE_SIZE = 8;
 
 // Default styling for new elements (can be overridden by AI or properties panel)
 export const DEFAULT_ELEMENT_STYLE = {

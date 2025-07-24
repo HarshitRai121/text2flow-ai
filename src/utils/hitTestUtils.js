@@ -1,4 +1,6 @@
 // src/utils/hitTestUtils.js
+import { RESIZE_HANDLE_SIZE } from './constants';
+import { getResizeHandles } from './drawingUtils'; // Import getResizeHandles
 
 // Check if a point is inside a rectangle
 const isPointInRectangle = (pointX, pointY, element) => {
@@ -38,39 +40,53 @@ const isPointOnLine = (pointX, pointY, element, tolerance = 5) => {
 };
 
 // Check if a point is within a text element's bounding box
-const isPointInText = (pointX, pointY, element) => {
-  // This is a simplified bounding box. For accurate text hit testing,
-  // you'd need to measure text width using ctx.measureText().
-  // For now, assume a reasonable width based on font size.
-  const assumedCharWidth = (element.fontSize || 16) * 0.6; // Approx char width
-  const assumedTextWidth = (element.text ? element.text.length : 10) * assumedCharWidth;
+export const isPointInTextElement = (pointX, pointY, element) => {
+  // For accurate text hit testing, you'd ideally measure text width using ctx.measureText().
+  // For now, we'll use a simplified approach based on font size and assumed average character width.
+  const assumedCharWidth = (element.fontSize || 16) * 0.6;
+  const assumedTextWidth = (element.text ? element.text.length : 10) * assumedCharWidth; // Estimate width
   const textHeight = (element.fontSize || 16);
 
-  let actualX = element.x;
-  let actualY = element.y;
+  // Adjust x based on textAlign for accurate bounding box
+  let effectiveX = element.x;
+  if (element.textAlign === 'center') {
+    effectiveX = element.x - assumedTextWidth / 2;
+  } else if (element.textAlign === 'right') {
+    effectiveX = element.x - assumedTextWidth;
+  }
 
-  // Adjust for textAlign and textBaseline if needed for accurate bounding box
-  // For simplicity, we'll just use top-left as anchor for now.
+  // Adjust y based on textBaseline for accurate bounding box
+  let effectiveY = element.y;
+  if (element.textBaseline === 'middle') {
+    effectiveY = element.y - textHeight / 2;
+  } else if (element.textBaseline === 'bottom') {
+    effectiveY = element.y - textHeight;
+  }
 
-  return pointX >= actualX && pointX <= actualX + assumedTextWidth &&
-         pointY >= actualY && pointY <= actualY + textHeight;
+  return pointX >= effectiveX && pointX <= effectiveX + assumedTextWidth &&
+         pointY >= effectiveY && pointY <= effectiveY + textHeight;
 };
 
+// Check if a point is inside a resize handle
+export const isPointInHandle = (pointX, pointY, handle) => {
+  const size = RESIZE_HANDLE_SIZE;
+  return pointX >= handle.x - size / 2 && pointX <= handle.x + size / 2 &&
+         pointY >= handle.y - size / 2 && pointY <= handle.y + size / 2;
+};
 
-// Main hit test function to determine which element was clicked
+// Main hit test function to determine which element or handle was clicked
 export const hitTest = (element, mouseX, mouseY) => {
   switch (element.type) {
     case 'rectangle':
-      return isPointInRectangle(mouseX, mouseY, element);
     case 'oval':
-      return isPointInOval(mouseX, mouseY, element);
     case 'diamond':
-      return isPointInDiamond(mouseX, mouseY, element);
+      return isPointInRectangle(mouseX, mouseY, element); // For shapes, check the main body
     case 'line':
       return isPointOnLine(mouseX, mouseY, element);
     case 'text':
-      return isPointInText(mouseX, mouseY, element);
+      return isPointInTextElement(mouseX, mouseY, element);
     default:
       return false;
   }
 };
+
