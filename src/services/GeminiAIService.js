@@ -1,6 +1,5 @@
 // src/services/GeminiAIService.js
-// Utility to generate unique IDs (needed for mock data)
-const generateUniqueId = () => crypto.randomUUID();
+import { generateUniqueId } from '../utils/constants'; // Import from constants
 
 export const GeminiAIService = {
   async generateDiagramFromPrompt(promptText) {
