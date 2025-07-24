@@ -2,10 +2,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Canvas from '../components/Canvas';
-import Modal from '../components/Modal'; // Import the new Modal component
-import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE } from '../utils/constants';
+import Modal from '../components/Modal';
+import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants'; // Import TOOL_TYPE and generateUniqueId
 import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager';
-import { Settings, Undo, Redo, Save, FolderOpen, Eraser } from 'lucide-react'; // Added Eraser icon
+// Import new Lucide icons for tools
+import { Settings, Undo, Redo, Save, FolderOpen, Eraser, MousePointer2, Square, Circle, Diamond, LineChart, Type } from 'lucide-react';
 
 const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const [diagramElements, setDiagramElements] = useState([]);
@@ -15,6 +16,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const [selectedElementId, setSelectedElementId] = useState(null);
   const [selectedElementProps, setSelectedElementProps] = useState(null);
   const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
+  const [activeTool, setActiveTool] = useState(TOOL_TYPE.SELECT); // New state for active tool
 
   // Modal state
   const [showModal, setShowModal] = useState(false);
@@ -28,9 +30,6 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
       pushState(diagramElements);
       isInitialRender.current = false;
     }
-    // This useEffect will now only run when diagramElements changes from a user action
-    // or AI generation. The `onElementChange` callback below will handle pushing state
-    // on mouseUp for visual edits.
   }, [diagramElements]);
 
   // Update selected element properties for the panel whenever selection changes or elements change
@@ -44,6 +43,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
       setShowPropertiesPanel(false);
     }
   }, [selectedElementId, diagramElements]);
+
 
   // --- Handlers for Canvas Interactions ---
   const handleElementSelect = useCallback((id) => {
@@ -64,6 +64,17 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     });
   }, []);
 
+  // New: Handler for adding a new element (from manual drawing tools)
+  const handleAddElement = useCallback((newElement) => {
+    setDiagramElements(prevElements => {
+      const updatedElements = [...prevElements, newElement];
+      pushState(updatedElements); // Push state immediately after adding
+      return updatedElements;
+    });
+    setSelectedElementId(newElement.id); // Select the newly added element
+  }, []);
+
+
   // --- AI Generation Handler ---
   const handleGenerateDiagram = async () => {
     if (!aiPrompt.trim()) {
@@ -75,6 +86,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     setDiagramElements([]); // Clear previous diagram
     setSelectedElementId(null); // Deselect any element
     clearHistory(); // Clear history for new diagram
+    setActiveTool(TOOL_TYPE.SELECT); // Reset tool after generation
 
     try {
       const newElements = await geminiService.generateDiagramFromPrompt(aiPrompt);
@@ -272,129 +284,62 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
       </div>
 
       <div className="w-full max-w-4xl flex flex-col lg:flex-row gap-6">
-        {/* Properties Panel */}
-        <div className={`lg:w-1/4 bg-white rounded-xl shadow-lg p-4 flex flex-col items-start space-y-3 transition-all duration-300 ${showPropertiesPanel ? 'block' : 'hidden lg:block'}`}>
-          <h2 className="text-xl font-semibold text-gray-800 mb-2 flex items-center space-x-2">
-            <Settings size={24} />
-            <span>Properties</span>
-          </h2>
-          {selectedElementProps ? (
-            <div className="w-full space-y-3">
-              <p className="text-gray-700 text-sm">ID: <span className="font-mono text-xs bg-gray-100 p-1 rounded break-all">{selectedElementProps.id}</span></p>
-              <p className="text-gray-700 text-sm">Type: <span className="font-semibold">{selectedElementProps.type}</span></p>
+        {/* Toolbar */}
+        <div className="lg:w-1/4 bg-white rounded-xl shadow-lg p-4 flex flex-col items-start space-y-3">
+          <h2 className="text-xl font-semibold text-gray-800 mb-2">Tools</h2>
+          {/* Select Tool */}
+          <button
+            onClick={() => setActiveTool(TOOL_TYPE.SELECT)}
+            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
+              ${activeTool === TOOL_TYPE.SELECT ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+          >
+            <MousePointer2 size={20} />
+            <span>Select</span>
+          </button>
+          <div className="w-full border-t border-gray-200 my-2"></div> {/* Separator */}
 
-              {/* Text/Label property */}
-              {(selectedElementProps.type === 'text' || selectedElementProps.label !== undefined) && (
-                <div>
-                  <label htmlFor="element-text" className="block text-sm font-medium text-gray-700 mb-1">
-                    {selectedElementProps.type === 'text' ? 'Text Content' : 'Label'}
-                  </label>
-                  <input
-                    type="text"
-                    id="element-text"
-                    className="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-gray-800"
-                    value={selectedElementProps.type === 'text' ? selectedElementProps.text : selectedElementProps.label || ''}
-                    onChange={(e) => handlePropertyChange(selectedElementProps.type === 'text' ? 'text' : 'label', e.target.value)}
-                  />
-                </div>
-              )}
-
-              {/* Stroke Color */}
-              {selectedElementProps.strokeColor !== undefined && (
-                <div>
-                  <label htmlFor="stroke-color" className="block text-sm font-medium text-gray-700 mb-1">Stroke Color</label>
-                  <input
-                    type="color"
-                    id="stroke-color"
-                    className="w-full h-10 border border-gray-300 rounded-md cursor-pointer"
-                    value={selectedElementProps.strokeColor}
-                    onChange={(e) => handlePropertyChange('strokeColor', e.target.value)}
-                  />
-                </div>
-              )}
-
-              {/* Fill Color (for shapes) */}
-              {(selectedElementProps.type === 'rectangle' || selectedElementProps.type === 'oval' || selectedElementProps.type === 'diamond') && (
-                <div>
-                  <label htmlFor="fill-color" className="block text-sm font-medium text-gray-700 mb-1">Fill Color</label>
-                  <input
-                    type="color"
-                    id="fill-color"
-                    className="w-full h-10 border border-gray-300 rounded-md cursor-pointer"
-                    value={selectedElementProps.fillColor}
-                    onChange={(e) => handlePropertyChange('fillColor', e.target.value)}
-                  />
-                </div>
-              )}
-
-              {/* Line Width */}
-              {selectedElementProps.lineWidth !== undefined && (
-                <div>
-                  <label htmlFor="line-width" className="block text-sm font-medium text-gray-700 mb-1">Line Width</label>
-                  <input
-                    type="range"
-                    id="line-width"
-                    min="1"
-                    max="10"
-                    step="1"
-                    className="w-full h-8 cursor-pointer"
-                    value={selectedElementProps.lineWidth}
-                    onChange={(e) => handlePropertyChange('lineWidth', parseInt(e.target.value))}
-                  />
-                  <span className="text-sm text-gray-600">{selectedElementProps.lineWidth}px</span>
-                </div>
-              )}
-
-              {/* Font Size (for text elements and labels) */}
-              {(selectedElementProps.type === 'text' || selectedElementProps.label !== undefined) && (
-                <div>
-                  <label htmlFor="font-size" className="block text-sm font-medium text-gray-700 mb-1">Font Size</label>
-                  <input
-                    type="range"
-                    id="font-size"
-                    min="8"
-                    max="48"
-                    step="1"
-                    className="w-full h-8 cursor-pointer"
-                    value={selectedElementProps.fontSize || DEFAULT_ELEMENT_STYLE.fontSize}
-                    onChange={(e) => handlePropertyChange('fontSize', parseInt(e.target.value))}
-                  />
-                  <span className="text-sm text-gray-600">{selectedElementProps.fontSize || DEFAULT_ELEMENT_STYLE.fontSize}px</span>
-                </div>
-              )}
-
-              {/* Text Color (for text elements and labels) */}
-              {(selectedElementProps.type === 'text' || selectedElementProps.label !== undefined) && (
-                <div>
-                  <label htmlFor="text-color" className="block text-sm font-medium text-gray-700 mb-1">Text Color</label>
-                  <input
-                    type="color"
-                    id="text-color"
-                    className="w-full h-10 border border-gray-300 rounded-md cursor-pointer"
-                    value={selectedElementProps.color || DEFAULT_ELEMENT_STYLE.color}
-                    onChange={(e) => handlePropertyChange('color', e.target.value)}
-                  />
-                </div>
-              )}
-
-              {/* Arrowhead (for lines) */}
-              {selectedElementProps.type === 'line' && (
-                <div>
-                  <label htmlFor="arrowhead" className="block text-sm font-medium text-gray-700 mb-1">Arrowhead</label>
-                  <input
-                    type="checkbox"
-                    id="arrowhead"
-                    className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                    checked={selectedElementProps.arrowhead}
-                    onChange={(e) => handlePropertyChange('arrowhead', e.target.checked)}
-                  />
-                </div>
-              )}
-
-            </div>
-          ) : (
-            <p className="text-gray-500">Select an element on the canvas to edit its properties.</p>
-          )}
+          {/* Drawing Tools */}
+          <h3 className="text-lg font-semibold text-gray-700 mb-1">Draw</h3>
+          <button
+            onClick={() => setActiveTool(TOOL_TYPE.RECTANGLE)}
+            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
+              ${activeTool === TOOL_TYPE.RECTANGLE ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+          >
+            <Square size={20} />
+            <span>Rectangle</span>
+          </button>
+          <button
+            onClick={() => setActiveTool(TOOL_TYPE.OVAL)}
+            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
+              ${activeTool === TOOL_TYPE.OVAL ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+          >
+            <Circle size={20} />
+            <span>Oval</span>
+          </button>
+          <button
+            onClick={() => setActiveTool(TOOL_TYPE.DIAMOND)}
+            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
+              ${activeTool === TOOL_TYPE.DIAMOND ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+          >
+            <Diamond size={20} />
+            <span>Diamond</span>
+          </button>
+          <button
+            onClick={() => setActiveTool(TOOL_TYPE.LINE)}
+            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
+              ${activeTool === TOOL_TYPE.LINE ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+          >
+            <LineChart size={20} /> {/* Using LineChart for a generic line icon */}
+            <span>Line</span>
+          </button>
+          <button
+            onClick={() => setActiveTool(TOOL_TYPE.TEXT)}
+            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
+              ${activeTool === TOOL_TYPE.TEXT ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+          >
+            <Type size={20} />
+            <span>Text</span>
+          </button>
         </div>
 
         {/* Canvas Area */}
@@ -412,7 +357,8 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
             selectedElementId={selectedElementId}
             onElementSelect={handleElementSelect}
             onElementChange={handleElementChange}
-            // onDoubleClickElement is now handled internally by Canvas for text editing
+            onAddElement={handleAddElement} // Pass new handler for adding elements
+            activeTool={activeTool} // Pass active tool to canvas
           />
         </div>
       </div>
