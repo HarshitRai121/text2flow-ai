@@ -5,8 +5,9 @@ import Canvas from '../components/Canvas';
 import Modal from '../components/Modal';
 import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants';
 import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager';
-// Import new Lucide icons for tools
-import { Settings, Undo, Redo, Save, FolderOpen, Eraser, MousePointer2, Square, Circle, Diamond, LineChart, Type, Trash2 } from 'lucide-react'; // Added Trash2 icon
+import { elementsToSvgString } from '../utils/exportUtils'; // Import SVG export utility
+// Import Lucide icons
+import { Settings, Undo, Redo, Save, FolderOpen, Eraser, MousePointer2, Square, Circle, Diamond, LineChart, Type, Trash2, Download, Image } from 'lucide-react'; // Added Download and Image icons
 
 const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const [diagramElements, setDiagramElements] = useState([]);
@@ -17,6 +18,9 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const [selectedElementProps, setSelectedElementProps] = useState(null);
   const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
   const [activeTool, setActiveTool] = useState(TOOL_TYPE.SELECT);
+
+  // Ref for the canvas element in DiagramApp (needed for PNG export)
+  const canvasRef = useRef(null);
 
   // Modal state
   const [showModal, setShowModal] = useState(false);
@@ -192,6 +196,38 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
       }
     });
     setShowModal(true);
+  };
+
+  // --- Export Handlers ---
+  const handleExportPng = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      setAppMessage("Canvas not available for export.");
+      return;
+    }
+
+    const image = canvas.toDataURL('image/png');
+    const link = document.createElement('a');
+    link.href = image;
+    link.download = 'text2flow-diagram.png';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setAppMessage('Diagram exported as PNG!');
+  };
+
+  const handleExportSvg = () => {
+    const svgString = elementsToSvgString(diagramElements, CANVAS_WIDTH, CANVAS_HEIGHT);
+    const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'text2flow-diagram.svg';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url); // Clean up the URL object
+    setAppMessage('Diagram exported as SVG!');
   };
 
 
@@ -380,6 +416,24 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
             <Trash2 size={20} />
             <span>Delete</span>
           </button>
+          <div className="w-full border-t border-gray-200 my-2"></div> {/* Separator */}
+
+          {/* Export Tools */}
+          <h3 className="text-lg font-semibold text-gray-700 mb-1">Export</h3>
+          <button
+            onClick={handleExportPng}
+            className="w-full px-4 py-2 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors duration-200 font-semibold flex items-center justify-center space-x-2"
+          >
+            <Image size={20} />
+            <span>Export PNG</span>
+          </button>
+          <button
+            onClick={handleExportSvg}
+            className="w-full px-4 py-2 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors duration-200 font-semibold flex items-center justify-center space-x-2"
+          >
+            <Download size={20} />
+            <span>Export SVG</span>
+          </button>
         </div>
 
         {/* Canvas Area */}
@@ -393,6 +447,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
             </div>
           )}
           <Canvas
+            ref={canvasRef} 
             diagramElements={diagramElements}
             selectedElementId={selectedElementId}
             onElementSelect={handleElementSelect}

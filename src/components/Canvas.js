@@ -1,11 +1,11 @@
 // src/components/Canvas.js
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useCallback, useState, forwardRef } from 'react'; // Import forwardRef
 import { drawRectangle, drawOval, drawDiamond, drawLine, drawTextElement, getResizeHandles } from '../utils/drawingUtils';
 import { hitTest, isPointInHandle, isPointInTextElement } from '../utils/hitTestUtils';
 import { CANVAS_WIDTH, CANVAS_HEIGHT, RESIZE_HANDLE_SIZE, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants';
 
-const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElementChange, onAddElement, activeTool }) => {
-  const canvasRef = useRef(null);
+// Use forwardRef to allow parent components to get a ref to the canvas DOM element
+const Canvas = forwardRef(({ diagramElements, selectedElementId, onElementSelect, onElementChange, onAddElement, activeTool }, ref) => {
   const isDraggingRef = useRef(false);
   const isResizingRef = useRef(false);
   const isDrawingRef = useRef(false);
@@ -15,25 +15,29 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
   // selectedElementInitialPropsRef will store the element's properties AT THE START of drag/resize
   const selectedElementInitialPropsRef = useRef(null);
   const startDrawingPointRef = useRef({ x: 0, y: 0 });
-  const currentMousePosRef = useRef({ x: 0, y: 0 });
+  const currentMousePosRef = useRef({ x: 0, y: 0 }); // Stores current mouse position for drawing preview
   const lastUpdatedElementPropsRef = useRef(null); // Stores the props sent to onElementChange for commit on mouseUp
 
   const [textInputProps, setTextInputProps] = useState(null);
 
+  // Helper function to get mouse position relative to the canvas
   const getMousePos = (e) => {
-    const rect = canvasRef.current.getBoundingClientRect();
+    const canvas = ref.current; // Use the forwarded ref
+    const rect = canvas.getBoundingClientRect();
     return {
       x: e.clientX - rect.left,
       y: e.clientY - rect.top,
     };
   };
 
+  // Function to draw all elements on the canvas
   const drawElements = useCallback(() => {
-    const canvas = canvasRef.current;
+    const canvas = ref.current; // Use the forwarded ref
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear canvas
 
+    // Draw existing diagram elements
     diagramElements.forEach(element => {
       const isSelected = element.id === selectedElementId;
       switch (element.type) {
@@ -57,12 +61,13 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
       }
     });
 
+    // Draw preview of the new element being drawn (if a drawing tool is active)
     if (isDrawingRef.current && startDrawingPointRef.current) {
       const { x: startX, y: startY } = startDrawingPointRef.current;
-      const { x: currentX, y: currentY } = currentMousePosRef.current;
+      const { x: currentX, y: currentY } = currentMousePosRef.current; // Use the ref for current mouse position
 
       const tempElement = {
-        id: 'temp-preview',
+        id: 'temp-preview', // Temporary ID for preview
         x: Math.min(startX, currentX),
         y: Math.min(startY, currentY),
         width: Math.abs(currentX - startX),
@@ -71,10 +76,10 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
         startY: startY,
         endX: currentX,
         endY: currentY,
-        label: '',
+        label: '', // No label during drawing preview
         ...DEFAULT_ELEMENT_STYLE,
-        strokeColor: '#3B82F6',
-        fillColor: 'rgba(59, 130, 246, 0.2)',
+        strokeColor: '#3B82F6', // Blue preview outline
+        fillColor: 'rgba(59, 130, 246, 0.2)', // Light blue transparent fill
       };
 
       switch (activeTool) {
@@ -91,26 +96,32 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
           drawLine(ctx, tempElement, false);
           break;
         case TOOL_TYPE.TEXT:
+          // No live preview for text tool; it creates on click
           break;
         default:
           break;
       }
     }
-  }, [diagramElements, selectedElementId, activeTool]);
+  }, [diagramElements, selectedElementId, activeTool, ref]); // Added ref to dependencies
 
+  // Effect to re-draw when elements or selection changes
   useEffect(() => {
     drawElements();
   }, [drawElements]);
 
+  // --- Mouse Event Handlers ---
   const handleMouseDown = (e) => {
     const { x: mouseX, y: mouseY } = getMousePos(e);
-    currentMousePosRef.current = { x: mouseX, y: mouseY };
+    currentMousePosRef.current = { x: mouseX, y: mouseY }; // Update current mouse position ref
     lastUpdatedElementPropsRef.current = null; // Reset for new operation
 
+    // Hide text input if clicking anywhere else
     setTextInputProps(null);
 
+    // Logic for TEXT tool (click to create/edit)
     if (activeTool === TOOL_TYPE.TEXT) {
       let foundTextElementToEdit = false;
+      // Check if an existing text element or label was clicked
       for (let i = diagramElements.length - 1; i >= 0; i--) {
         const element = diagramElements[i];
         const textContent = element.type === 'text' ? element.text : element.label;
@@ -120,17 +131,17 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
           let textY = element.y;
           let fontSize = element.fontSize || DEFAULT_ELEMENT_STYLE.fontSize;
           let textColor = element.color || DEFAULT_ELEMENT_STYLE.color;
-          let estimatedWidth = textContent.length * (fontSize * 0.6) + 20;
-          let estimatedHeight = fontSize * 1.2 + 20;
+          let estimatedWidth = textContent.length * (fontSize * 0.6) + 20; // Rough estimate + padding
+          let estimatedHeight = fontSize * 1.2 + 20; // Rough estimate + padding
 
-          if (element.type !== 'text') {
+          if (element.type !== 'text') { // It's a shape with a label
             textX = element.x + element.width / 2 - estimatedWidth / 2;
             textY = element.y + element.height / 2 - estimatedHeight / 2;
           }
 
           const tempTextElement = {
             ...element,
-            type: 'text',
+            type: 'text', // Treat as text for hit test
             x: textX,
             y: textY,
             text: textContent,
@@ -158,9 +169,10 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
       }
 
       if (foundTextElementToEdit) {
-        isDrawingRef.current = false;
+        isDrawingRef.current = false; // Not drawing, just editing
         return;
       } else {
+        // If no existing text element/label was clicked, create a new one
         const newTextElement = {
           id: generateUniqueId(),
           type: TOOL_TYPE.TEXT,
@@ -176,22 +188,23 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
           id: newTextElement.id,
           x: newTextElement.x,
           y: newTextElement.y,
-          width: 100,
-          height: newTextElement.fontSize * 1.2,
+          width: 100, // Initial estimate
+          height: newTextElement.fontSize * 1.2, // Initial estimate
           text: newTextElement.text,
           fontSize: newTextElement.fontSize,
           color: newTextElement.color,
           originalType: TOOL_TYPE.TEXT
         });
-        isDrawingRef.current = false;
+        isDrawingRef.current = false; // Text tool doesn't "drag" to draw
         return;
       }
     }
 
+    // Logic for other drawing tools (RECTANGLE, OVAL, DIAMOND, LINE)
     if (activeTool !== TOOL_TYPE.SELECT) {
       isDrawingRef.current = true;
       startDrawingPointRef.current = { x: mouseX, y: mouseY };
-      onElementSelect(null);
+      onElementSelect(null); // Deselect any existing element when starting to draw
       return;
     }
 
@@ -199,6 +212,7 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
     let clickedElement = null;
     let clickedHandle = null;
 
+    // Iterate elements in reverse to select top-most
     for (let i = diagramElements.length - 1; i >= 0; i--) {
       const element = diagramElements[i];
 
@@ -213,7 +227,7 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
           }
         }
       }
-      if (clickedHandle) break;
+      if (clickedHandle) break; // Found a handle, no need to check element body
 
       // If no handle, check for element body
       if (hitTest(element, mouseX, mouseY)) {
@@ -222,6 +236,7 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
       }
     }
 
+    // Handle selection and drag/resize state
     if (clickedHandle) {
       onElementSelect(clickedElement.id);
       isResizingRef.current = true;
@@ -253,16 +268,18 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
 
   const handleMouseMove = (e) => {
     const { x: mouseX, y: mouseY } = getMousePos(e);
-    currentMousePosRef.current = { x: mouseX, y: mouseY };
+    currentMousePosRef.current = { x: mouseX, y: mouseY }; // Always update current mouse position
 
+    // If currently drawing a new element
     if (isDrawingRef.current && activeTool !== TOOL_TYPE.SELECT && activeTool !== TOOL_TYPE.TEXT) {
-      drawElements();
+      drawElements(); // Re-draw canvas to show drawing preview
       return;
     }
 
-    // FIX: Get the *current* element from diagramElements for up-to-date properties
+    // Get the *current* element from diagramElements for up-to-date properties
     const currentSelectedElement = diagramElements.find(el => el.id === selectedElementId);
 
+    // If currently resizing an element
     if (isResizingRef.current && currentSelectedElement && selectedElementInitialPropsRef.current) {
       const initialElement = selectedElementInitialPropsRef.current; // Use initial properties
       const handleName = resizeHandleNameRef.current;
@@ -277,6 +294,7 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
       const dx = mouseX - initialMouseX; // Change in X from initial mouse position
       const dy = mouseY - initialMouseY; // Change in Y from initial mouse position
 
+      // Calculate new dimensions and position based on handle
       switch (handleName) {
         case 'tl': // Top-Left
           newX = initialElement.x + dx;
@@ -316,6 +334,7 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
           break;
       }
 
+      // Ensure minimum size and positive dimensions
       newWidth = Math.max(newWidth, RESIZE_HANDLE_SIZE * 2);
       newHeight = Math.max(newHeight, RESIZE_HANDLE_SIZE * 2);
 
@@ -326,22 +345,25 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
         height: newHeight,
       };
       onElementChange(currentSelectedElement.id, updatedProps);
-      lastUpdatedElementPropsRef.current = updatedProps;
+      lastUpdatedElementPropsRef.current = updatedProps; // Store for commit on mouseUp
 
-      // dragOffsetRef should NOT be updated during resize, it holds the initial mouse position
-      // dragOffsetRef.current = { x: mouseX, y: mouseY }; // REMOVED
     } else if (isDraggingRef.current && currentSelectedElement && selectedElementInitialPropsRef.current) {
+      // If currently dragging an element
       const initialElement = selectedElementInitialPropsRef.current; // Use initial properties
       let newElementProps = {};
       const offsetX = dragOffsetRef.current.x; // Offset from mouse to element's top-left/start
       const offsetY = dragOffsetRef.current.y;
 
       if (initialElement.type === 'line') {
+        // Calculate new start/end based on initial position and mouse movement relative to offset
+        const deltaX = mouseX - initialElement.startX - offsetX;
+        const deltaY = mouseY - initialElement.startY - offsetY;
+
         newElementProps = {
-          startX: mouseX - offsetX,
-          startY: mouseY - offsetY,
-          endX: initialElement.endX + (mouseX - initialElement.startX - offsetX), // Calculate delta from initial
-          endY: initialElement.endY + (mouseY - initialElement.startY - offsetY), // Calculate delta from initial
+          startX: initialElement.startX + deltaX,
+          startY: initialElement.startY + deltaY,
+          endX: initialElement.endX + deltaX,
+          endY: initialElement.endY + deltaY,
         };
       } else {
         newElementProps = {
@@ -350,15 +372,16 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
         };
       }
       onElementChange(currentSelectedElement.id, newElementProps);
-      lastUpdatedElementPropsRef.current = newElementProps;
+      lastUpdatedElementPropsRef.current = newElementProps; // Store for commit on mouseUp
     }
 
-    const canvas = canvasRef.current;
+    // Update cursor based on hover and active tool
+    const canvas = ref.current; // Use the forwarded ref
     if (canvas) {
       let cursor = 'default';
 
       if (isDrawingRef.current) {
-        cursor = 'crosshair';
+        cursor = 'crosshair'; // Drawing cursor
       } else if (isResizingRef.current) {
         // Ensure currentSelectedElement is valid here too
         if (currentSelectedElement) {
@@ -394,12 +417,12 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
         if (hoveredHandle) {
           cursor = hoveredHandle.cursor;
         } else if (hoveredElement) {
-          cursor = 'grab';
+          cursor = 'grab'; // Indicate draggable
         }
       } else if (activeTool === TOOL_TYPE.TEXT) {
         cursor = 'text';
       } else {
-        cursor = 'crosshair';
+        cursor = 'crosshair'; // For other drawing tools
       }
       canvas.style.cursor = cursor;
     }
@@ -409,6 +432,7 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
     const { x: mouseX, y: mouseY } = getMousePos(e);
     const { x: startX, y: startY } = startDrawingPointRef.current;
 
+    // Finalize drawing a new shape/line
     if (isDrawingRef.current && activeTool !== TOOL_TYPE.SELECT && activeTool !== TOOL_TYPE.TEXT) {
       let newElement = null;
       const width = Math.abs(mouseX - startX);
@@ -416,9 +440,10 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
       const x = Math.min(startX, mouseX);
       const y = Math.min(startY, mouseY);
 
+      // Ensure minimum size for shapes
       if (width < 10 || height < 10) {
         isDrawingRef.current = false;
-        return;
+        return; // Don't create tiny elements
       }
 
       switch (activeTool) {
@@ -439,12 +464,13 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
       }
 
       if (newElement) {
-        onAddElement(newElement);
+        onAddElement(newElement); // Add the new element via callback
       }
     }
 
+    // Commit the state to history only when drag/resize ends and there were actual updates
     if ((isDraggingRef.current || isResizingRef.current) && lastUpdatedElementPropsRef.current) {
-      onElementChange(selectedElementId, lastUpdatedElementPropsRef.current, true);
+      onElementChange(selectedElementId, lastUpdatedElementPropsRef.current, true); // Pass true to commit
     }
 
     // Reset all transient state variables and refs
@@ -456,32 +482,36 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
     dragOffsetRef.current = { x: 0, y: 0 };
     startDrawingPointRef.current = { x: 0, y: 0 };
     currentMousePosRef.current = { x: 0, y: 0 };
-    lastUpdatedElementPropsRef.current = null;
+    lastUpdatedElementPropsRef.current = null; // Clear last updated props
   };
 
+  // Double-click handler for text editing
   const handleDoubleClick = (e) => {
     const { x: mouseX, y: mouseY } = getMousePos(e);
 
+    // Iterate elements in reverse to find the top-most text element or shape with label
     for (let i = diagramElements.length - 1; i >= 0; i--) {
       const element = diagramElements[i];
       const textContent = element.type === 'text' ? element.text : element.label;
 
-      if (textContent !== undefined && textContent !== null) {
+      if (textContent !== undefined && textContent !== null) { // Only consider elements that have text/label
         let textX = element.x;
         let textY = element.y;
         let fontSize = element.fontSize || DEFAULT_ELEMENT_STYLE.fontSize;
         let textColor = element.color || DEFAULT_ELEMENT_STYLE.color;
-        let estimatedWidth = textContent.length * (fontSize * 0.6) + 20;
-        let estimatedHeight = fontSize * 1.2 + 20;
+        let estimatedWidth = textContent.length * (fontSize * 0.6) + 20; // Rough estimate + padding
+        let estimatedHeight = fontSize * 1.2 + 20; // Rough estimate + padding
 
-        if (element.type !== 'text') {
+        if (element.type !== 'text') { // It's a shape with a label
+          // Adjust position to center of shape for text editing overlay
           textX = element.x + element.width / 2 - estimatedWidth / 2;
           textY = element.y + element.height / 2 - estimatedHeight / 2;
         }
 
+        // Create a temporary element object for hit testing the text content
         const tempTextElement = {
-          ...element,
-          type: 'text',
+          ...element, // Carry over original element properties
+          type: 'text', // Treat as text for hit test
           x: textX,
           y: textY,
           text: textContent,
@@ -499,38 +529,42 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
             text: textContent,
             fontSize: fontSize,
             color: textColor,
-            originalType: element.type
+            originalType: element.type // Keep original type to know if it's a shape's label
           });
-          onElementSelect(element.id);
+          onElementSelect(element.id); // Select the element when its text is double-clicked
           return;
         }
       }
     }
-    setTextInputProps(null);
+    setTextInputProps(null); // Double-clicked on empty space or non-text part
   };
 
+  // Handler for text input change (updates element in real-time)
   const handleTextInputChange = (e) => {
     const newText = e.target.value;
     setTextInputProps(prev => ({ ...prev, text: newText }));
+    // Update the actual diagram element's label/text
     onElementChange(textInputProps.id, textInputProps.originalType === 'text' ? { text: newText } : { label: newText });
   };
 
+  // Handler for text input blur (commits to history)
   const handleTextInputBlur = () => {
+    // When blur, commit to history
     onElementChange(textInputProps.id, textInputProps.originalType === 'text' ? { text: textInputProps.text } : { label: textInputProps.text }, true);
-    setTextInputProps(null);
+    setTextInputProps(null); // Hide the input field
   };
 
   return (
     <div className="relative w-full h-full">
       <canvas
-        ref={canvasRef}
+        ref={ref} // Attach the forwarded ref here
         width={CANVAS_WIDTH}
         height={CANVAS_HEIGHT}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onDoubleClick={handleDoubleClick}
+        onMouseLeave={handleMouseUp} // Stop drawing/dragging if mouse leaves canvas
+        onDoubleClick={handleDoubleClick} // Handle double-click for text editing
         className="block bg-f8f8f8 border border-e0e0e0 rounded-lg shadow-md"
       ></canvas>
 
@@ -545,10 +579,10 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
             fontSize: textInputProps.fontSize,
             color: textInputProps.color,
             fontFamily: 'Inter, sans-serif',
-            lineHeight: `${textInputProps.fontSize * 1.2}px`,
+            lineHeight: `${textInputProps.fontSize * 1.2}px`, // Match line height
             background: 'rgba(255, 255, 255, 0.9)',
             boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
-            zIndex: 20,
+            zIndex: 20, // Ensure it's above canvas
           }}
           value={textInputProps.text}
           onChange={handleTextInputChange}
@@ -558,6 +592,6 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
       )}
     </div>
   );
-};
+});
 
 export default Canvas;
