@@ -3,10 +3,10 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Canvas from '../components/Canvas';
 import Modal from '../components/Modal';
-import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants'; // Import TOOL_TYPE and generateUniqueId
+import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants';
 import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager';
 // Import new Lucide icons for tools
-import { Settings, Undo, Redo, Save, FolderOpen, Eraser, MousePointer2, Square, Circle, Diamond, LineChart, Type } from 'lucide-react';
+import { Settings, Undo, Redo, Save, FolderOpen, Eraser, MousePointer2, Square, Circle, Diamond, LineChart, Type, Trash2 } from 'lucide-react'; // Added Trash2 icon
 
 const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const [diagramElements, setDiagramElements] = useState([]);
@@ -16,7 +16,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const [selectedElementId, setSelectedElementId] = useState(null);
   const [selectedElementProps, setSelectedElementProps] = useState(null);
   const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
-  const [activeTool, setActiveTool] = useState(TOOL_TYPE.SELECT); // New state for active tool
+  const [activeTool, setActiveTool] = useState(TOOL_TYPE.SELECT);
 
   // Modal state
   const [showModal, setShowModal] = useState(false);
@@ -64,7 +64,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     });
   }, []);
 
-  // New: Handler for adding a new element (from manual drawing tools)
+  // Handler for adding a new element (from manual drawing tools)
   const handleAddElement = useCallback((newElement) => {
     setDiagramElements(prevElements => {
       const updatedElements = [...prevElements, newElement];
@@ -167,6 +167,33 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     });
     setShowModal(true);
   };
+
+  // --- Delete Element Handler ---
+  const handleDeleteElement = () => {
+    if (!selectedElementId) {
+      setAppMessage("No element selected to delete.");
+      return;
+    }
+
+    setModalContent({
+      title: 'Delete Element',
+      message: 'Are you sure you want to delete the selected element? This action can be undone.',
+      showConfirm: true,
+      confirmText: 'Delete',
+      onConfirm: () => {
+        setDiagramElements(prevElements => {
+          const updatedElements = prevElements.filter(el => el.id !== selectedElementId);
+          pushState(updatedElements); // Push state after deletion
+          return updatedElements;
+        });
+        setSelectedElementId(null); // Deselect after deletion
+        setAppMessage('Element deleted.');
+        setShowModal(false);
+      }
+    });
+    setShowModal(true);
+  };
+
 
   // --- Properties Panel Handlers ---
   const handlePropertyChange = (key, value) => {
@@ -340,6 +367,19 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
             <Type size={20} />
             <span>Text</span>
           </button>
+          <div className="w-full border-t border-gray-200 my-2"></div> {/* Separator */}
+
+          {/* Action Tools */}
+          <h3 className="text-lg font-semibold text-gray-700 mb-1">Actions</h3>
+          <button
+            onClick={handleDeleteElement}
+            disabled={!selectedElementId} // Disable if no element is selected
+            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
+              ${!selectedElementId ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-100 text-red-700 hover:bg-red-200'}`}
+          >
+            <Trash2 size={20} />
+            <span>Delete</span>
+          </button>
         </div>
 
         {/* Canvas Area */}
@@ -357,8 +397,8 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
             selectedElementId={selectedElementId}
             onElementSelect={handleElementSelect}
             onElementChange={handleElementChange}
-            onAddElement={handleAddElement} // Pass new handler for adding elements
-            activeTool={activeTool} // Pass active tool to canvas
+            onAddElement={handleAddElement}
+            activeTool={activeTool}
           />
         </div>
       </div>
