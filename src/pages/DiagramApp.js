@@ -5,16 +5,17 @@ import Canvas from '../components/Canvas';
 import Modal from '../components/Modal';
 import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants';
 import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager';
-import { elementsToSvgString } from '../utils/exportUtils'; // Import SVG export utility
+import { elementsToSvgString } from '../utils/exportUtils';
 // Import Lucide icons
-import { Settings, Undo, Redo, Save, FolderOpen, Eraser, MousePointer2, Square, Circle, Diamond, LineChart, Type, Trash2, Download, Image } from 'lucide-react'; // Added Download and Image icons
+import { Settings, Undo, Redo, Save, FolderOpen, Eraser, MousePointer2, Square, Circle, Diamond, LineChart, Type, Trash2, Download, Image } from 'lucide-react';
 
 const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const [diagramElements, setDiagramElements] = useState([]);
   const [aiPrompt, setAiPrompt] = useState("Generate a simple flowchart with a start, a process, a decision, and two end points.");
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [appMessage, setAppMessage] = useState('');
-  const [selectedElementId, setSelectedElementId] = useState(null);
+  const [selectedElementId, setSelectedElementId] = useState(null); // For single selection (e.g., for resize)
+  const [selectedElementsIds, setSelectedElementsIds] = useState([]); // New: For multi-selection
   const [selectedElementProps, setSelectedElementProps] = useState(null);
   const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
   const [activeTool, setActiveTool] = useState(TOOL_TYPE.SELECT);
@@ -38,15 +39,21 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
 
   // Update selected element properties for the panel whenever selection changes or elements change
   useEffect(() => {
-    if (selectedElementId) {
+    // If there's a single selected element (for properties panel)
+    if (selectedElementId && !selectedElementsIds.length) {
       const element = diagramElements.find(el => el.id === selectedElementId);
       setSelectedElementProps(element || null);
       setShowPropertiesPanel(true);
-    } else {
+    } else if (selectedElementsIds.length === 1) { // If only one element in multi-selection
+      const element = diagramElements.find(el => el.id === selectedElementsIds[0]);
+      setSelectedElementProps(element || null);
+      setShowPropertiesPanel(true);
+    }
+    else {
       setSelectedElementProps(null);
       setShowPropertiesPanel(false);
     }
-  }, [selectedElementId, diagramElements]);
+  }, [selectedElementId, selectedElementsIds, diagramElements]);
 
 
   // --- Handlers for Canvas Interactions ---
@@ -54,15 +61,29 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     setSelectedElementId(id);
   }, []);
 
-  // This handler is called for both movement and resizing
-  // It will also trigger pushing the state to history on mouseUp
+  // New: Callback for multi-element selection from Canvas
+  const handleElementsSelect = useCallback((ids) => {
+    setSelectedElementsIds(ids);
+  }, []);
+
+  // This handler is called for both movement and resizing (continuous updates)
+  // and also for committing to history (discrete updates on mouseUp/blur)
   const handleElementChange = useCallback((id, newProps, commitToHistory = false) => {
     setDiagramElements(prevElements => {
-      const updatedElements = prevElements.map(el =>
-        el.id === id ? { ...el, ...newProps } : el
-      );
+      let updatedElements;
+      if (Array.isArray(newProps)) { // If newProps is an array, it's a multi-element update
+        updatedElements = prevElements.map(el => {
+          const updated = newProps.find(p => p.id === el.id);
+          return updated ? { ...el, ...updated } : el;
+        });
+      } else { // Single element update
+        updatedElements = prevElements.map(el =>
+          el.id === id ? { ...el, ...newProps } : el
+        );
+      }
+
       if (commitToHistory) {
-        pushState(updatedElements);
+        pushState(updatedElements); // Only push to history when commitToHistory is true
       }
       return updatedElements;
     });
@@ -76,6 +97,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
       return updatedElements;
     });
     setSelectedElementId(newElement.id); // Select the newly added element
+    setSelectedElementsIds([]); // Clear multi-selection when adding new single element
   }, []);
 
 
@@ -89,6 +111,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     setIsLoadingAI(true);
     setDiagramElements([]); // Clear previous diagram
     setSelectedElementId(null); // Deselect any element
+    setSelectedElementsIds([]); // Clear multi-selection
     clearHistory(); // Clear history for new diagram
     setActiveTool(TOOL_TYPE.SELECT); // Reset tool after generation
 
@@ -125,6 +148,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
       pushState(loadedData); // Push loaded state to history
       setAppMessage('Diagram loaded successfully!');
       setSelectedElementId(null); // Clear selection after loading new diagram
+      setSelectedElementsIds([]); // Clear multi-selection
     } catch (error) {
       setAppMessage(`Error loading: ${error.message}`);
       console.error("Load error:", error);
@@ -137,6 +161,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     if (prevState !== null) {
       setDiagramElements(prevState);
       setSelectedElementId(null); // Clear selection on undo/redo for simplicity
+      setSelectedElementsIds([]); // Clear multi-selection
       setAppMessage('Undo successful.');
     } else {
       setAppMessage('Nothing to undo.');
@@ -148,6 +173,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     if (nextState !== null) {
       setDiagramElements(nextState);
       setSelectedElementId(null); // Clear selection on undo/redo for simplicity
+      setSelectedElementsIds([]); // Clear multi-selection
       setAppMessage('Redo successful.');
     } else {
       setAppMessage('Nothing to redo.');
@@ -165,6 +191,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
         setDiagramElements([]);
         clearHistory(); // Clear history when canvas is cleared
         setSelectedElementId(null);
+        setSelectedElementsIds([]); // Clear multi-selection
         setAppMessage('Canvas cleared.');
         setShowModal(false);
       }
@@ -174,24 +201,26 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
 
   // --- Delete Element Handler ---
   const handleDeleteElement = () => {
-    if (!selectedElementId) {
+    if (!selectedElementId && selectedElementsIds.length === 0) {
       setAppMessage("No element selected to delete.");
       return;
     }
 
     setModalContent({
-      title: 'Delete Element',
-      message: 'Are you sure you want to delete the selected element? This action can be undone.',
+      title: 'Delete Element(s)',
+      message: `Are you sure you want to delete the selected element${selectedElementsIds.length > 1 ? 's' : ''}? This action can be undone.`,
       showConfirm: true,
       confirmText: 'Delete',
       onConfirm: () => {
         setDiagramElements(prevElements => {
-          const updatedElements = prevElements.filter(el => el.id !== selectedElementId);
+          const idsToDelete = selectedElementId ? [selectedElementId] : selectedElementsIds;
+          const updatedElements = prevElements.filter(el => !idsToDelete.includes(el.id));
           pushState(updatedElements); // Push state after deletion
           return updatedElements;
         });
         setSelectedElementId(null); // Deselect after deletion
-        setAppMessage('Element deleted.');
+        setSelectedElementsIds([]); // Clear multi-selection
+        setAppMessage('Element(s) deleted.');
         setShowModal(false);
       }
     });
@@ -235,19 +264,21 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const handlePropertyChange = (key, value) => {
     setDiagramElements(prevElements => {
       const updatedElements = prevElements.map(el => {
+        // Apply property change only to the single selected element
+        // If multiple elements are selected, properties panel should ideally be disabled or apply to all.
+        // For now, it only applies to `selectedElementId`.
         if (el.id === selectedElementId) {
           // Special handling for text vs. label
-          if (el.type === 'text' && key === 'label') { // If it's a text element, update 'text'
+          if (el.type === 'text' && key === 'label') {
             return { ...el, text: value };
-          } else if (el.type !== 'text' && key === 'text') { // If it's a shape, update 'label'
+          } else if (el.type !== 'text' && key === 'text') {
              return { ...el, label: value };
           }
           return { ...el, [key]: value };
         }
         return el;
       });
-      // Push state immediately for property changes, as they are discrete actions
-      pushState(updatedElements);
+      pushState(updatedElements); // Push state immediately for property changes
       return updatedElements;
     });
   };
@@ -409,9 +440,9 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
           <h3 className="text-lg font-semibold text-gray-700 mb-1">Actions</h3>
           <button
             onClick={handleDeleteElement}
-            disabled={!selectedElementId} // Disable if no element is selected
+            disabled={!selectedElementId && selectedElementsIds.length === 0} // Disable if no element is selected
             className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
-              ${!selectedElementId ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-100 text-red-700 hover:bg-red-200'}`}
+              ${(!selectedElementId && selectedElementsIds.length === 0) ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-100 text-red-700 hover:bg-red-200'}`}
           >
             <Trash2 size={20} />
             <span>Delete</span>
@@ -447,12 +478,14 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
             </div>
           )}
           <Canvas
-            ref={canvasRef} 
+            ref={canvasRef}
             diagramElements={diagramElements}
             selectedElementId={selectedElementId}
+            selectedElementsIds={selectedElementsIds} // Pass multi-selection state
             onElementSelect={handleElementSelect}
             onElementChange={handleElementChange}
             onAddElement={handleAddElement}
+            onElementsSelect={handleElementsSelect} // Pass the new handler for multi-selection
             activeTool={activeTool}
           />
         </div>
