@@ -2,9 +2,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Canvas from '../components/Canvas';
+import Modal from '../components/Modal'; // Import the new Modal component
 import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE } from '../utils/constants';
-import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager'; // Import history manager
-import { Settings, Undo, Redo, Save, FolderOpen } from 'lucide-react'; // Icons for properties, undo/redo, save/load
+import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager';
+import { Settings, Undo, Redo, Save, FolderOpen, Eraser } from 'lucide-react'; // Added Eraser icon
 
 const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const [diagramElements, setDiagramElements] = useState([]);
@@ -12,39 +13,37 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [appMessage, setAppMessage] = useState('');
   const [selectedElementId, setSelectedElementId] = useState(null);
-  const [selectedElementProps, setSelectedElementProps] = useState(null); // For properties panel
+  const [selectedElementProps, setSelectedElementProps] = useState(null);
   const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
 
+  // Modal state
+  const [showModal, setShowModal] = useState(false);
+  const [modalContent, setModalContent] = useState({ title: '', message: '', showConfirm: false, confirmText: '', onConfirm: null });
+
   // --- History Management ---
-  const isInitialRender = useRef(true); // To prevent pushing empty state on first render
+  const isInitialRender = useRef(true);
 
   useEffect(() => {
-    // Push initial state to history after first render, or whenever diagramElements changes
     if (isInitialRender.current) {
       pushState(diagramElements);
       isInitialRender.current = false;
-    } else {
-      // Only push state if it's a user-initiated change, not just a re-render
-      // We'll refine this later to only push on "completed" actions (mouseUp, blur)
-      // For now, it pushes on every change, which can be noisy but functional.
-      // A better approach for undo/redo is to push state *after* a series of changes (e.g., on mouseUp).
-      // For this demo, we'll push state when diagramElements changes, which is simple.
-      // A more refined undo/redo would involve a separate effect for "committing" changes.
     }
-  }, [diagramElements]); // Dependency on diagramElements
+    // This useEffect will now only run when diagramElements changes from a user action
+    // or AI generation. The `onElementChange` callback below will handle pushing state
+    // on mouseUp for visual edits.
+  }, [diagramElements]);
 
   // Update selected element properties for the panel whenever selection changes or elements change
   useEffect(() => {
     if (selectedElementId) {
       const element = diagramElements.find(el => el.id === selectedElementId);
       setSelectedElementProps(element || null);
-      setShowPropertiesPanel(true); // Show panel if something is selected
+      setShowPropertiesPanel(true);
     } else {
       setSelectedElementProps(null);
-      setShowPropertiesPanel(false); // Hide panel if nothing is selected
+      setShowPropertiesPanel(false);
     }
   }, [selectedElementId, diagramElements]);
-
 
   // --- Handlers for Canvas Interactions ---
   const handleElementSelect = useCallback((id) => {
@@ -52,22 +51,17 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   }, []);
 
   // This handler is called for both movement and resizing
-  const handleElementChange = useCallback((id, newProps) => {
+  // It will also trigger pushing the state to history on mouseUp
+  const handleElementChange = useCallback((id, newProps, commitToHistory = false) => {
     setDiagramElements(prevElements => {
       const updatedElements = prevElements.map(el =>
         el.id === id ? { ...el, ...newProps } : el
       );
-      // Only push state to history if it's a significant change (e.g., after mouseUp)
-      // For now, we'll let the useEffect above handle it, which is simpler for the demo.
-      // In a production app, you'd likely debounce or trigger history push on mouseUp.
+      if (commitToHistory) {
+        pushState(updatedElements);
+      }
       return updatedElements;
     });
-  }, []);
-
-  const handleDoubleClickElement = useCallback((id) => {
-    // This callback is currently unused in Canvas.js, as text editing is handled internally.
-    // It's here as a placeholder if you want to externalize text editing logic.
-    console.log("Double-clicked element:", id);
   }, []);
 
   // --- AI Generation Handler ---
@@ -144,6 +138,24 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     }
   };
 
+  // --- Clear Canvas Handler ---
+  const handleClearCanvas = () => {
+    setModalContent({
+      title: 'Clear Canvas',
+      message: 'Are you sure you want to clear the entire canvas? This action cannot be undone unless you save first.',
+      showConfirm: true,
+      confirmText: 'Clear',
+      onConfirm: () => {
+        setDiagramElements([]);
+        clearHistory(); // Clear history when canvas is cleared
+        setSelectedElementId(null);
+        setAppMessage('Canvas cleared.');
+        setShowModal(false);
+      }
+    });
+    setShowModal(true);
+  };
+
   // --- Properties Panel Handlers ---
   const handlePropertyChange = (key, value) => {
     setDiagramElements(prevElements => {
@@ -159,7 +171,8 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
         }
         return el;
       });
-      pushState(updatedElements); // Push state after property change
+      // Push state immediately for property changes, as they are discrete actions
+      pushState(updatedElements);
       return updatedElements;
     });
   };
@@ -242,6 +255,13 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
           >
             <Redo size={20} />
             <span>Redo</span>
+          </button>
+          <button
+            onClick={handleClearCanvas}
+            className="flex-1 min-w-[120px] bg-red-400 hover:bg-red-500 text-white px-6 py-3 rounded-lg shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-300 focus:ring-offset-2 flex items-center justify-center space-x-2"
+          >
+            <Eraser size={20} />
+            <span>Clear</span>
           </button>
         </div>
         {appMessage && (
@@ -392,7 +412,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
             selectedElementId={selectedElementId}
             onElementSelect={handleElementSelect}
             onElementChange={handleElementChange}
-            onDoubleClickElement={handleDoubleClickElement}
+            // onDoubleClickElement is now handled internally by Canvas for text editing
           />
         </div>
       </div>
@@ -400,6 +420,17 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
       <p className="mt-4 text-gray-500 text-sm">
         Current User ID: {user ? user.uid : 'Not available'} (for Firebase storage)
       </p>
+
+      {/* Custom Modal for confirmations/alerts */}
+      <Modal
+        show={showModal}
+        title={modalContent.title}
+        message={modalContent.message}
+        onClose={() => setShowModal(false)}
+        onConfirm={modalContent.onConfirm}
+        showConfirmButton={modalContent.showConfirm}
+        confirmText={modalContent.confirmText}
+      />
     </div>
   );
 };

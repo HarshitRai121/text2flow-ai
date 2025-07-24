@@ -2,9 +2,9 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { drawRectangle, drawOval, drawDiamond, drawLine, drawTextElement, getResizeHandles } from '../utils/drawingUtils';
 import { hitTest, isPointInHandle, isPointInTextElement } from '../utils/hitTestUtils';
-import { CANVAS_WIDTH, CANVAS_HEIGHT, RESIZE_HANDLE_SIZE } from '../utils/constants';
+import { CANVAS_WIDTH, CANVAS_HEIGHT, RESIZE_HANDLE_SIZE, DEFAULT_ELEMENT_STYLE } from '../utils/constants';
 
-const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElementChange, onDoubleClickElement }) => {
+const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElementChange }) => {
   const canvasRef = useRef(null);
   const isDraggingRef = useRef(false);
   const isResizingRef = useRef(false);
@@ -13,7 +13,7 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
   const selectedElementRef = useRef(null); // To store the actual selected element object during drag/resize
 
   // State for the temporary text input for direct editing
-  const [textInputProps, setTextInputProps] = useState(null); // { id, x, y, width, height, text, fontSize, color }
+  const [textInputProps, setTextInputProps] = useState(null); // { id, x, y, width, height, text, fontSize, color, originalType }
 
   // Function to draw all elements on the canvas
   const drawElements = useCallback(() => {
@@ -136,6 +136,7 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
       const dx = mouseX - startX;
       const dy = mouseY - startY;
 
+      // Calculate new dimensions and position based on handle
       switch (handleName) {
         case 'tl': // Top-Left
           newX = element.x + dx;
@@ -175,10 +176,11 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
           break;
       }
 
-      // Ensure minimum size
-      newWidth = Math.max(newWidth, 20);
-      newHeight = Math.max(newHeight, 20);
+      // Ensure minimum size and positive dimensions
+      newWidth = Math.max(newWidth, RESIZE_HANDLE_SIZE * 2);
+      newHeight = Math.max(newHeight, RESIZE_HANDLE_SIZE * 2);
 
+      // Update element properties via callback
       onElementChange(element.id, {
         x: newX,
         y: newY,
@@ -247,6 +249,10 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
   };
 
   const handleMouseUp = () => {
+    if (isDraggingRef.current || isResizingRef.current) {
+      // Commit the state to history only when drag/resize ends
+      onElementChange(selectedElementId, selectedElementRef.current, true); // Pass true to commit
+    }
     isDraggingRef.current = false;
     isResizingRef.current = false;
     resizeHandleNameRef.current = null;
@@ -257,25 +263,23 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
   const handleDoubleClick = (e) => {
     const { x: mouseX, y: mouseY } = getMousePos(e);
 
-    // Iterate elements in reverse to find the top-most text element
+    // Iterate elements in reverse to find the top-most text element or shape with label
     for (let i = diagramElements.length - 1; i >= 0; i--) {
       const element = diagramElements[i];
-      if (element.type === 'text' || element.label) { // Check if it's a text element or a shape with a label
-        // For shapes with labels, we need to estimate the label's position
+      const textContent = element.type === 'text' ? element.text : element.label;
+
+      if (textContent) { // Only consider elements that have text/label
         let textX = element.x;
         let textY = element.y;
-        let textWidth = element.width;
-        let textHeight = element.height;
-        let textContent = element.text || element.label;
         let fontSize = element.fontSize || DEFAULT_ELEMENT_STYLE.fontSize;
+        let textColor = element.color || DEFAULT_ELEMENT_STYLE.color;
+        let estimatedWidth = textContent.length * (fontSize * 0.6); // Rough estimate
+        let estimatedHeight = fontSize * 1.2; // Rough estimate
 
         if (element.type !== 'text') { // It's a shape with a label
-          // Estimate text position within the shape for hit testing
-          // This is a simplification; ideally, measure text to get exact bounds
-          textX = element.x + element.width / 2 - (textContent.length * fontSize * 0.3) ; // Rough center
-          textY = element.y + element.height / 2 - (fontSize / 2);
-          textWidth = textContent.length * fontSize * 0.6; // Rough width
-          textHeight = fontSize;
+          // Adjust position to center of shape for text editing overlay
+          textX = element.x + element.width / 2 - estimatedWidth / 2;
+          textY = element.y + element.height / 2 - estimatedHeight / 2;
         }
 
         // Create a temporary element object for hit testing the text content
@@ -285,20 +289,20 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
           x: textX,
           y: textY,
           text: textContent,
-          fontSize: fontSize
+          fontSize: fontSize,
+          color: textColor,
         };
 
         if (isPointInTextElement(mouseX, mouseY, tempTextElement)) {
-          // Found a text element or a shape's label to edit
           setTextInputProps({
             id: element.id,
             x: textX,
             y: textY,
-            width: textWidth, // Pass estimated width for textarea
-            height: textHeight, // Pass estimated height for textarea
+            width: estimatedWidth,
+            height: estimatedHeight,
             text: textContent,
             fontSize: fontSize,
-            color: element.color || DEFAULT_ELEMENT_STYLE.color,
+            color: textColor,
             originalType: element.type // Keep original type to know if it's a shape's label
           });
           onElementSelect(element.id); // Select the element when its text is double-clicked
@@ -317,6 +321,8 @@ const Canvas = ({ diagramElements, selectedElementId, onElementSelect, onElement
   };
 
   const handleTextInputBlur = () => {
+    // When blur, commit to history
+    onElementChange(textInputProps.id, textInputProps.originalType === 'text' ? { text: textInputProps.text } : { label: textInputProps.text }, true);
     setTextInputProps(null); // Hide the input field
   };
 
