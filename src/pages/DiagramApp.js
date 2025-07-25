@@ -10,10 +10,13 @@ import { elementsToSvgString } from '../utils/exportUtils';
 import {
   Settings, Undo, Redo, Save, FolderOpen, Eraser,
   MousePointer2, Square, Circle, Diamond, LineChart, Type,
-  Trash2, Download, Image, Copy, ClipboardPaste // Added Copy and ClipboardPaste icons
+  Trash2, Download, Image, Copy, ClipboardPaste, Sparkles
 } from 'lucide-react';
 
-const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
+// FIX: Corrected import for geminiService
+import { geminiService } from '../services/GeminiAIService'; // Import the instance directly
+
+const DiagramApp = ({ user, onLogout, firebaseService }) => { // Removed geminiService from props
   const [diagramElements, setDiagramElements] = useState([]);
   const [aiPrompt, setAiPrompt] = useState("Generate a simple flowchart with a start, a process, a decision, and two end points.");
   const [isLoadingAI, setIsLoadingAI] = useState(false);
@@ -24,8 +27,11 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
   const [activeTool, setActiveTool] = useState(TOOL_TYPE.SELECT);
 
-  // New: State to hold copied elements
   const [copiedElements, setCopiedElements] = useState([]);
+
+  // State for AI refinement
+  const [aiRefinePrompt, setAiRefinePrompt] = useState("");
+  const [isLoadingRefineAI, setIsLoadingRefineAI] = useState(false);
 
   // Ref for the canvas element in DiagramApp (needed for PNG export)
   const canvasRef = useRef(null);
@@ -123,6 +129,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     setActiveTool(TOOL_TYPE.SELECT); // Reset tool after generation
 
     try {
+      // Use the imported geminiService instance directly
       const newElements = await geminiService.generateDiagramFromPrompt(aiPrompt);
       setDiagramElements(newElements);
       pushState(newElements); // Push the generated state to history
@@ -134,6 +141,65 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
       setIsLoadingAI(false);
     }
   };
+
+  // --- AI Refinement Handler ---
+  const handleRefineElementWithAI = async () => {
+    if (!selectedElementId && selectedElementsIds.length === 0) {
+      setAppMessage("Please select an element to refine with AI.");
+      return;
+    }
+    if (!aiRefinePrompt.trim()) {
+      setAppMessage("Please enter a refinement prompt for the selected element.");
+      return;
+    }
+
+    setAppMessage('');
+    setIsLoadingRefineAI(true);
+
+    try {
+      // Get the element(s) to refine
+      const elementsToRefine = selectedElementId
+        ? [diagramElements.find(el => el.id === selectedElementId)]
+        : diagramElements.filter(el => selectedElementsIds.includes(el.id));
+
+      if (!elementsToRefine.length || elementsToRefine.some(el => !el)) {
+        setAppMessage("Selected element(s) not found.");
+        setIsLoadingRefineAI(false);
+        return;
+      }
+
+      // Convert elements to a simplified JSON string for the AI
+      const simplifiedElements = elementsToRefine.map(el => {
+        const { id, type, label, text, x, y, width, height, startX, startY, endX, endY, ...rest } = el;
+        return { id, type, label: label || text, x, y, width, height, startX, startY, endX, endY };
+      });
+      const currentElementJson = JSON.stringify(simplifiedElements);
+
+      // Use the imported geminiService instance directly
+      const refinedElementsData = await geminiService.refineElement(currentElementJson, aiRefinePrompt);
+
+      setDiagramElements(prevElements => {
+        let updatedElements = [...prevElements];
+        refinedElementsData.forEach(refinedEl => {
+          const index = updatedElements.findIndex(el => el.id === refinedEl.id);
+          if (index !== -1) {
+            // Merge existing properties with refined properties
+            updatedElements[index] = { ...updatedElements[index], ...refinedEl };
+          }
+        });
+        pushState(updatedElements); // Push state after refinement
+        return updatedElements;
+      });
+      setAppMessage('Element(s) refined successfully!');
+      setAiRefinePrompt(''); // Clear prompt after use
+    } catch (error) {
+      setAppMessage(`Error refining: ${error.message}`);
+      console.error("AI Refinement Error:", error);
+    } finally {
+      setIsLoadingRefineAI(false);
+    }
+  };
+
 
   // --- Save/Load Handlers ---
   const handleSaveDiagram = async () => {
@@ -379,7 +445,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
         <textarea
           id="ai-prompt"
           className="w-full p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 resize-y min-h-[100px] text-gray-700"
-          placeholder="e.g., 'A flowchart with a start oval, a process rectangle, a decision diamond, and two end ovals. Connect them logically.'"
+          placeholder="e.g., 'A flowchart with a start oval, a process rectangle, a decision diamond, and two end points.'"
           value={aiPrompt}
           onChange={(e) => setAiPrompt(e.target.value)}
           rows="4"
@@ -577,6 +643,40 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
             activeTool={activeTool}
           />
         </div>
+      </div>
+
+      {/* New: AI Refinement Section */}
+      <div className="w-full max-w-4xl bg-white rounded-xl shadow-lg p-6 mt-6">
+        <h2 className="text-xl font-semibold text-gray-800 mb-3">AI Refinement (Selected Element)</h2>
+        <p className="text-gray-600 mb-3">Select an element on the canvas, then describe how you want to refine it (e.g., "change to a diamond shape", "make text red", "add label 'Error'").</p>
+        <textarea
+          className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 resize-y min-h-[60px] text-gray-700"
+          placeholder="e.g., 'change this rectangle to an oval and make it green'"
+          value={aiRefinePrompt}
+          onChange={(e) => setAiRefinePrompt(e.target.value)}
+          rows="2"
+          disabled={!selectedElementId && selectedElementsIds.length === 0}
+        ></textarea>
+        <button
+          onClick={handleRefineElementWithAI}
+          disabled={(!selectedElementId && selectedElementsIds.length === 0) || !aiRefinePrompt.trim() || isLoadingRefineAI}
+          className={`mt-3 w-full px-6 py-3 rounded-lg text-white font-semibold shadow-md transition-all duration-300 flex items-center justify-center space-x-2
+            ${(!selectedElementId && selectedElementsIds.length === 0) || !aiRefinePrompt.trim() || isLoadingRefineAI
+              ? 'bg-purple-400 cursor-not-allowed'
+              : 'bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2'}`}
+        >
+          {isLoadingRefineAI ? (
+            <span className="flex items-center justify-center">
+              <LoadingSpinner className="-ml-1 mr-3 h-5 w-5 text-white" />
+              Refining...
+            </span>
+          ) : (
+            <>
+              <Sparkles size={20} />
+              <span>Refine Selected with AI</span>
+            </>
+          )}
+        </button>
       </div>
 
       <p className="mt-4 text-gray-500 text-sm">

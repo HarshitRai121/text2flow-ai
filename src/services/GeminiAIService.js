@@ -55,7 +55,6 @@ const getShapeConnectionPoint = (shape, targetX, targetY) => {
     }
 
     // Ensure the point is within the diamond's bounds (approximate)
-    // This part can still be tricky for perfect diamond connections
     // For flowcharts, connecting to the nearest side is often sufficient.
   }
   // For text elements, just use their center as connection point for now
@@ -170,8 +169,8 @@ const parseDiagramTextOutput = (textOutput) => {
           type: 'line',
           startX: 0, // Placeholder
           startY: 0, // Placeholder
-          endX: 0,   // Placeholder
-          endY: 0,   // Placeholder
+          endX: 0,  // Placeholder
+          endY: 0,  // Placeholder
           arrowhead: true,
           strokeColor: '#000000',
           lineWidth: 2,
@@ -224,8 +223,6 @@ const parseDiagramTextOutput = (textOutput) => {
   const layerSpacingY = 120; // Vertical space between layers
   const minElementSpacingX = 40; // Minimum horizontal space between elements
 
-  let maxDiagramWidth = 0; // Track the widest layer for scaling
-
   layers.forEach((layerElements, layerIndex) => {
     const layerY = startY + layerIndex * layerSpacingY;
     
@@ -243,8 +240,6 @@ const parseDiagramTextOutput = (textOutput) => {
       element.y = layerY;
       currentLayerX += (element.width || 0) + minElementSpacingX;
     });
-
-    maxDiagramWidth = Math.max(maxDiagramWidth, currentLayerX);
   });
 
   // --- Fourth Pass: Update line coordinates based on new element positions ---
@@ -294,6 +289,7 @@ const parseDiagramTextOutput = (textOutput) => {
   const targetHeight = CANVAS_HEIGHT - padding * 2;
 
   let scaleFactor = 1;
+  // Only scale if the diagram is larger than the target area
   if (diagramCurrentWidth > targetWidth || diagramCurrentHeight > targetHeight) {
     scaleFactor = Math.min(targetWidth / diagramCurrentWidth, targetHeight / diagramCurrentHeight);
   }
@@ -327,19 +323,17 @@ const parseDiagramTextOutput = (textOutput) => {
 };
 
 
-export const GeminiAIService = {
+class GeminiAIService {
+  constructor() {
+    this.API_KEY = process.env.REACT_APP_GEMINI_API_KEY; // Canvas will provide this at runtime
+    this.BASE_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+  }
+
   async generateDiagramFromPrompt(promptText) {
     console.log("Calling actual Gemini API with prompt (text-based):", promptText);
 
-    const apiKey = process.env.REACT_APP_GEMINI_API_KEY;
-    
-    if (!apiKey) {
-      throw new Error("Gemini API Key is not defined. Please set REACT_APP_GEMINI_API_KEY in your .env file and restart your development server.");
-    }
-
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-
-    console.log("Using API URL:", apiUrl);
+    // Construct the full API URL including the key parameter
+    const apiUrl = `${this.BASE_API_URL}?key=${this.API_KEY}`;
 
     let chatHistory = [];
     chatHistory.push({
@@ -347,37 +341,36 @@ export const GeminiAIService = {
       parts: [
         {
           text: `Generate a list of elements and connections for a diagram based on the following description.
-                   Provide the output as a plain text list, one item per line, without any JSON, markdown formatting (like \`\`\`json), or extra conversational text.
-                   Use the following format for elements: "- Element: [type], Label: [label]"
-                   Use the following format for lines: "- Line: [Source Label] -> [Target Label] (optional label for line)"
-                   Recognized element types are: start, process, decision, end, text.
-                   Ensure logical flow and reasonable connections.
+          Provide the output as a plain text list, one item per line, without any JSON, markdown formatting (like \`\`\`json), or extra conversational text.
+          Use the following format for elements: "- Element: [type], Label: [label]"
+          Use the following format for lines: "- Line: [Source Label] -> [Target Label] (optional label for line)"
+          Recognized element types are: start, process, decision, end, text.
+          Ensure logical flow and reasonable connections.
 
-                   Example:
-                   - Element: Start, Label: Begin Process
-                   - Element: Process, Label: Step A
-                   - Element: Decision, Label: Is it OK?
-                   - Element: Process, Label: Step B
-                   - Element: End, Label: Finish (Success)
-                   - Element: End, Label: Finish (Failure)
-                   - Line: Begin Process -> Step A
-                   - Line: Step A -> Is it OK?
-                   - Line: Is it OK? -> Step B (Yes)
-                   - Line: Is it OK? -> Finish (Failure) (No)
-                   - Line: Step B -> Finish (Success)
+          Example:
+          - Element: Start, Label: Begin Process
+          - Element: Process, Label: Step A
+          - Element: Decision, Label: Is it OK?
+          - Element: Process, Label: Step B
+          - Element: End, Label: Finish (Success)
+          - Element: End, Label: Finish (Failure)
+          - Line: Begin Process -> Step A
+          - Line: Step A -> Is it OK?
+          - Line: Is it OK? -> Step B (Yes)
+          - Line: Is it OK? -> Finish (Failure) (No)
+          - Line: Step B -> Finish (Success)
 
-                   Here's the diagram description: "${promptText}"`
+          Here's the diagram description: "${promptText}"`
         }
       ]
     });
 
     const payload = {
       contents: chatHistory,
-      // No responseMimeType or responseSchema here, as we expect plain text
     };
 
     try {
-      const response = await fetch(apiUrl, {
+      const response = await fetch(apiUrl, { // Use the constructed apiUrl with key
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -398,7 +391,6 @@ export const GeminiAIService = {
         
         console.log("Raw AI response text (for parsing):", textOutput); 
 
-        // Parse the text output into structured diagram elements
         const finalElements = parseDiagramTextOutput(textOutput);
 
         console.log("Gemini API generated elements (after parsing):", finalElements);
@@ -411,4 +403,101 @@ export const GeminiAIService = {
       throw new Error(`Failed to generate diagram from AI: ${error.message}`);
     }
   }
-};
+
+  async refineElement(currentElementJson, refinementPrompt) {
+    const fullPrompt = `
+      You are an expert diagramming assistant. A user wants to refine an existing diagram element (or a group of elements).
+      You will be provided with the current JSON representation of the selected element(s) and a natural language refinement prompt.
+      Your task is to return a JSON array containing only the modified element(s) with their updated properties.
+
+      IMPORTANT:
+      - Only include the 'id' and the properties that NEED TO BE CHANGED. Do NOT include unchanged properties.
+      - If the user asks to change the 'type' of a shape, ensure all relevant properties for the new type are included (e.g., 'width', 'height', 'x', 'y' for shapes; 'startX', 'startY', 'endX', 'endY' for lines).
+      - Maintain existing 'id's. Do NOT generate new IDs.
+      - If a property is not explicitly mentioned for change, assume it remains the same.
+      - If the refinement prompt implies a new label/text, update the 'label' or 'text' property accordingly.
+      - Provide only the JSON array, no other text or explanation.
+
+      Current element(s) JSON:
+      ${currentElementJson}
+
+      Refinement prompt: "${refinementPrompt}"
+    `;
+
+    // Construct the full API URL including the key parameter
+    const apiUrl = `${this.BASE_API_URL}?key=${this.API_KEY}`;
+
+    const payload = {
+      contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "ARRAY",
+          items: {
+            type: "OBJECT",
+            properties: {
+              id: { type: "STRING" },
+              type: { type: "STRING" }, // Can be changed
+              x: { type: "NUMBER" },
+              y: { type: "NUMBER" },
+              width: { type: "NUMBER" },
+              height: { type: "NUMBER" },
+              label: { type: "STRING" },
+              text: { type: "STRING" },
+              startX: { type: "NUMBER" },
+              startY: { type: "NUMBER" },
+              endX: { type: "NUMBER" },
+              endY: { type: "NUMBER" },
+              arrowhead: { type: "BOOLEAN" },
+              strokeColor: { type: "STRING" },
+              fillColor: { type: "STRING" },
+              lineWidth: { type: "NUMBER" },
+              fontSize: { type: "NUMBER" },
+              color: { type: "STRING" }
+            },
+            // REMOVED: "additionalProperties": true // This is not supported by Gemini's responseSchema
+          }
+        }
+      }
+    };
+
+    try {
+      const response = await fetch(apiUrl, { // Use the constructed apiUrl with key
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`API error: ${response.status} ${response.statusText} - ${errorData.error?.message || 'Unknown error'}`);
+      }
+
+      const result = await response.json();
+      if (result.candidates && result.candidates.length > 0 &&
+          result.candidates[0].content && result.candidates[0].content.parts &&
+          result.candidates[0].content.parts.length > 0) {
+        const jsonString = result.candidates[0].content.parts[0].text;
+        const cleanedJsonString = jsonString.replace(/^```json\n|\n```$/g, '');
+        const parsedJson = JSON.parse(cleanedJsonString);
+
+        if (Array.isArray(parsedJson)) {
+          if (parsedJson.every(el => el.id)) {
+            return parsedJson;
+          } else {
+            throw new Error("AI response for refinement is missing 'id' for some elements.");
+          }
+        } else {
+          throw new Error("AI response for refinement is not a valid JSON array.");
+        }
+      } else {
+        throw new Error("AI response structure is unexpected or content is missing for refinement.");
+      }
+    } catch (error) {
+      console.error("Error in refineElement:", error);
+      throw error;
+    }
+  }
+}
+
+export const geminiService = new GeminiAIService();
