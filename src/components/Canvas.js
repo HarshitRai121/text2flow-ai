@@ -1,7 +1,7 @@
 // src/components/Canvas.js
 import React, { useRef, useEffect, useCallback, useState, forwardRef } from 'react';
-import { drawRectangle, drawOval, drawDiamond, drawLine, drawTextElement, getResizeHandles } from '../utils/drawingUtils';
-import { hitTest, isPointInHandle, isPointInTextElement } from '../utils/hitTestUtils';
+import { drawRectangle, drawOval, drawDiamond, drawLine, drawTextElement, getResizeHandles, drawConnectionIndicator } from '../utils/drawingUtils';
+import { hitTest, isPointInHandle, isPointInTextElement, isPointNearShapeBoundary } from '../utils/hitTestUtils'; // Import new hit test
 import { CANVAS_WIDTH, CANVAS_HEIGHT, RESIZE_HANDLE_SIZE, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants';
 
 // Use forwardRef to allow parent components to get a ref to the canvas DOM element
@@ -9,16 +9,19 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
   const isDraggingRef = useRef(false);
   const isResizingRef = useRef(false);
   const isDrawingRef = useRef(false);
-  // dragOffsetRef now stores the initial mouse position for both drag and resize
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const resizeHandleNameRef = useRef(null);
-  const selectedElementInitialPropsRef = useRef(null); // Stores the element's properties AT THE START of drag/resize
-  const startDrawingPointRef = useRef({ x: 0, y: 0 }); // Start point for drawing new shapes/lines or selection box
-  const currentMousePosRef = useRef({ x: 0, y: 0 }); // Stores current mouse position for drawing preview & selection box
-  const lastUpdatedElementPropsRef = useRef(null); // Stores the props sent to onElementChange for commit on mouseUp
+  const selectedElementInitialPropsRef = useRef(null);
+  const startDrawingPointRef = useRef({ x: 0, y: 0 });
+  const currentMousePosRef = useRef({ x: 0, y: 0 });
+  const lastUpdatedElementPropsRef = useRef(null);
+
+  // New: Refs for line connection logic
+  const potentialSourceElementRef = useRef(null); // Element hovered over when starting a line drag
+  const potentialTargetElementRef = useRef(null); // Element hovered over when ending a line drag
 
   // State for drawing the selection box (local to Canvas)
-  const [selectionBox, setSelectionBox] = useState(null); // { x, y, width, height }
+  const [selectionBox, setSelectionBox] = useState(null);
 
   const [textInputProps, setTextInputProps] = useState(null);
 
@@ -95,7 +98,25 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
           drawDiamond(ctx, tempElement, false);
           break;
         case TOOL_TYPE.LINE:
-          drawLine(ctx, tempElement, false);
+          // If drawing a line, check for potential source/target elements
+          const sourceEl = potentialSourceElementRef.current;
+          const targetEl = potentialTargetElementRef.current;
+
+          // Draw line preview, possibly snapping to potential source/target
+          const actualStartX = sourceEl ? (sourceEl.x + sourceEl.width / 2) : startX;
+          const actualStartY = sourceEl ? (sourceEl.y + sourceEl.height / 2) : startY;
+          const actualEndX = targetEl ? (targetEl.x + targetEl.width / 2) : currentX;
+          const actualEndY = targetEl ? (targetEl.y + targetEl.height / 2) : currentY;
+
+          drawLine(ctx, { ...tempElement, startX: actualStartX, startY: actualStartY, endX: actualEndX, endY: actualEndY }, false);
+          
+          // Draw connection indicators if hovering over elements
+          if (sourceEl) {
+            drawConnectionIndicator(ctx, sourceEl.x + sourceEl.width / 2, sourceEl.y + sourceEl.height / 2);
+          }
+          if (targetEl) {
+            drawConnectionIndicator(ctx, targetEl.x + targetEl.width / 2, targetEl.y + targetEl.height / 2);
+          }
           break;
         case TOOL_TYPE.TEXT:
           break;
@@ -114,7 +135,7 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
       ctx.fillStyle = 'rgba(59, 130, 246, 0.1)';
       ctx.fillRect(selectionBox.x, selectionBox.y, selectionBox.width, selectionBox.height);
     }
-  }, [diagramElements, selectedElementId, selectedElementsIds, activeTool, selectionBox, ref]);
+  }, [diagramElements, selectedElementId, selectedElementsIds, activeTool, selectionBox, ref, potentialSourceElementRef, potentialTargetElementRef]);
 
   // Effect to re-draw when elements or selection changes
   useEffect(() => {
@@ -216,6 +237,17 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
       startDrawingPointRef.current = { x: mouseX, y: mouseY };
       onElementSelect(null); // Clear single selection
       onElementsSelect([]); // Clear multi-selection
+
+      // If drawing a line, check for a potential source element
+      if (activeTool === TOOL_TYPE.LINE) {
+        for (let i = diagramElements.length - 1; i >= 0; i--) {
+          const element = diagramElements[i];
+          if (element.type !== 'line' && element.type !== 'text' && isPointNearShapeBoundary(mouseX, mouseY, element)) {
+            potentialSourceElementRef.current = element;
+            break;
+          }
+        }
+      }
       return;
     }
 
@@ -297,6 +329,21 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
   const handleMouseMove = (e) => {
     const { x: mouseX, y: mouseY } = getMousePos(e);
     currentMousePosRef.current = { x: mouseX, y: mouseY };
+
+    // If drawing a line, update potential target element
+    if (isDrawingRef.current && activeTool === TOOL_TYPE.LINE) {
+      let hoveredTarget = null;
+      for (let i = diagramElements.length - 1; i >= 0; i--) {
+        const element = diagramElements[i];
+        if (element.type !== 'line' && element.type !== 'text' && isPointNearShapeBoundary(mouseX, mouseY, element)) {
+          hoveredTarget = element;
+          break;
+        }
+      }
+      potentialTargetElementRef.current = hoveredTarget;
+      drawElements(); // Re-draw to show line preview and potential target indicator
+      return;
+    }
 
     if (isDrawingRef.current && activeTool !== TOOL_TYPE.SELECT && activeTool !== TOOL_TYPE.TEXT) {
       drawElements(); // Re-draw canvas to show drawing preview
@@ -513,6 +560,8 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
 
       if (!shouldCreateElement) {
         isDrawingRef.current = false;
+        potentialSourceElementRef.current = null; // Clear potential source
+        potentialTargetElementRef.current = null; // Clear potential target
         return; // Don't create tiny elements or accidental clicks
       }
 
@@ -527,7 +576,43 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
           newElement = { id: generateUniqueId(), type: TOOL_TYPE.DIAMOND, x, y, width, height, label: '', ...DEFAULT_ELEMENT_STYLE };
           break;
         case TOOL_TYPE.LINE:
-          newElement = { id: generateUniqueId(), type: TOOL_TYPE.LINE, startX, startY, endX: mouseX, endY: mouseY, label: '', ...DEFAULT_ELEMENT_STYLE };
+          // If a line is being drawn, check for connection points
+          const sourceElement = potentialSourceElementRef.current;
+          const targetElement = potentialTargetElementRef.current;
+
+          let finalStartX = startX;
+          let finalStartY = startY;
+          let finalEndX = mouseX;
+          let finalEndY = mouseY;
+          let sourceId = null;
+          let targetId = null;
+
+          if (sourceElement) {
+            sourceId = sourceElement.id;
+            // Use center of source element as start point if connected
+            finalStartX = sourceElement.x + sourceElement.width / 2;
+            finalStartY = sourceElement.y + sourceElement.height / 2;
+          }
+          if (targetElement) {
+            targetId = targetElement.id;
+            // Use center of target element as end point if connected
+            finalEndX = targetElement.x + targetElement.width / 2;
+            finalEndY = targetElement.y + targetElement.height / 2;
+          }
+
+          newElement = {
+            id: generateUniqueId(),
+            type: TOOL_TYPE.LINE,
+            startX: finalStartX,
+            startY: finalStartY,
+            endX: finalEndX,
+            endY: finalEndY,
+            label: '',
+            arrowhead: true, // Default lines to have arrowheads
+            ...DEFAULT_ELEMENT_STYLE,
+            sourceId: sourceId, // Store connected source element ID
+            targetId: targetId, // Store connected target element ID
+          };
           break;
         default:
           break;
@@ -557,6 +642,8 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
     startDrawingPointRef.current = { x: 0, y: 0 };
     currentMousePosRef.current = { x: 0, y: 0 };
     lastUpdatedElementPropsRef.current = null;
+    potentialSourceElementRef.current = null; // Clear potential source
+    potentialTargetElementRef.current = null; // Clear potential target
   };
 
   // Double-click handler for text editing

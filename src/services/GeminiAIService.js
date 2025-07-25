@@ -3,7 +3,7 @@ import { generateUniqueId, DEFAULT_ELEMENT_STYLE, CANVAS_WIDTH, CANVAS_HEIGHT } 
 
 // Helper function to calculate the connection point on a shape's boundary
 // towards a target point. This version is more robust for various shapes.
-const getShapeConnectionPoint = (shape, targetX, targetY) => {
+export const getShapeConnectionPoint = (shape, targetX, targetY) => { // Exported for use in DiagramApp
   const cx = shape.x + (shape.width / 2 || 0);
   const cy = shape.y + (shape.height / 2 || 0);
 
@@ -175,8 +175,8 @@ const parseDiagramTextOutput = (textOutput) => {
           strokeColor: '#000000',
           lineWidth: 2,
           label: lineLabel,
-          sourceId: sourceElement.id,
-          targetId: targetElement.id,
+          sourceId: sourceElement.id, // Store source element ID
+          targetId: targetElement.id, // Store target element ID
           sourceLabel: sourceLabel, // Store labels for layout pass
           targetLabel: targetLabel
         });
@@ -325,7 +325,7 @@ const parseDiagramTextOutput = (textOutput) => {
 
 class GeminiAIService {
   constructor() {
-    this.API_KEY = process.env.REACT_APP_GEMINI_API_KEY; // Canvas will provide this at runtime
+    this.API_KEY = process.env.REACT_APP_GEMINI_API_KEY; 
     this.BASE_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
   }
 
@@ -455,7 +455,6 @@ class GeminiAIService {
               fontSize: { type: "NUMBER" },
               color: { type: "STRING" }
             },
-            // REMOVED: "additionalProperties": true // This is not supported by Gemini's responseSchema
           }
         }
       }

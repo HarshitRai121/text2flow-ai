@@ -3,10 +3,11 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Canvas from '../components/Canvas';
 import Modal from '../components/Modal';
-import PropertiesPanel from '../components/PropertiesPanel'; // Import the new component
+import PropertiesPanel from '../components/PropertiesPanel';
 import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants';
 import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager';
 import { elementsToSvgString } from '../utils/exportUtils';
+import { getShapeConnectionPoint } from '../services/GeminiAIService'; // Import the helper function
 // Import Lucide icons
 import {
   Settings, Undo, Redo, Save, FolderOpen, Eraser,
@@ -14,7 +15,7 @@ import {
   Trash2, Download, Image, Copy, ClipboardPaste, Sparkles
 } from 'lucide-react';
 
-import { geminiService } from '../services/GeminiAIService'; // Import the instance directly
+import { geminiService } from '../services/GeminiAIService';
 
 const DiagramApp = ({ user, onLogout, firebaseService }) => {
   const [diagramElements, setDiagramElements] = useState([]);
@@ -24,7 +25,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
   const [selectedElementId, setSelectedElementId] = useState(null);
   const [selectedElementsIds, setSelectedElementsIds] = useState([]);
   const [selectedElementProps, setSelectedElementProps] = useState(null);
-  const [showPropertiesPanel, setShowPropertiesPanel] = useState(false); // State to control panel visibility
+  const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
   const [activeTool, setActiveTool] = useState(TOOL_TYPE.SELECT);
 
   const [copiedElements, setCopiedElements] = useState([]);
@@ -52,19 +53,18 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
 
   // Update selected element properties for the panel whenever selection changes or elements change
   useEffect(() => {
-    // If there's a single selected element (for properties panel)
     if (selectedElementId && !selectedElementsIds.length) {
       const element = diagramElements.find(el => el.id === selectedElementId);
       setSelectedElementProps(element || null);
       setShowPropertiesPanel(true);
-    } else if (selectedElementsIds.length === 1) { // If only one element in multi-selection
+    } else if (selectedElementsIds.length === 1) {
       const element = diagramElements.find(el => el.id === selectedElementsIds[0]);
       setSelectedElementProps(element || null);
       setShowPropertiesPanel(true);
     }
     else {
       setSelectedElementProps(null);
-      setShowPropertiesPanel(false); // Hide panel if no single element is selected
+      setShowPropertiesPanel(false);
     }
   }, [selectedElementId, selectedElementsIds, diagramElements]);
 
@@ -74,7 +74,6 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
     setSelectedElementId(id);
   }, []);
 
-  // Callback for multi-element selection from Canvas
   const handleElementsSelect = useCallback((ids) => {
     setSelectedElementsIds(ids);
   }, []);
@@ -83,24 +82,137 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
   // and also for committing to history (discrete updates on mouseUp/blur)
   const handleElementChange = useCallback((id, newProps, commitToHistory = false) => {
     setDiagramElements(prevElements => {
-      let updatedElements;
-      if (Array.isArray(newProps)) { // If newProps is an array, it's a multi-element update
+      let updatedElements = [...prevElements];
+      
+      // Find the element being changed (could be a shape or a line)
+      const changedElementIndex = updatedElements.findIndex(el => el.id === id);
+      const changedElement = changedElementIndex !== -1 ? updatedElements[changedElementIndex] : null;
+
+      if (changedElement) {
+        // Apply the new properties to the changed element
+        updatedElements[changedElementIndex] = { ...changedElement, ...newProps };
+
+        // If the changed element is a shape, update all connected lines
+        if (changedElement.type !== 'line' && (newProps.x !== undefined || newProps.y !== undefined || newProps.width !== undefined || newProps.height !== undefined)) {
+          updatedElements = updatedElements.map(el => {
+            if (el.type === 'line' && (el.sourceId === id || el.targetId === id)) {
+              const sourceShape = updatedElements.find(s => s.id === el.sourceId);
+              const targetShape = updatedElements.find(s => s.id === el.targetId);
+
+              let newStartX = el.startX;
+              let newStartY = el.startY;
+              let newEndX = el.endX;
+              let newEndY = el.endY;
+
+              if (sourceShape && targetShape) {
+                // Calculate new connection points based on updated shape positions
+                const { x: connectedStartX, y: connectedStartY } = getShapeConnectionPoint(sourceShape, targetShape.x + targetShape.width / 2, targetShape.y + targetShape.height / 2);
+                const { x: connectedEndX, y: connectedEndY } = getShapeConnectionPoint(targetShape, sourceShape.x + sourceShape.width / 2, sourceShape.y + sourceShape.height / 2);
+                
+                newStartX = connectedStartX;
+                newStartY = connectedStartY;
+                newEndX = connectedEndX;
+                newEndY = connectedEndY;
+              } else if (sourceShape && !targetShape) { // Only source is connected
+                // Move line start point with source, keep end point relative
+                const deltaX = (sourceShape.x + sourceShape.width / 2) - (changedElement.x + changedElement.width / 2);
+                const deltaY = (sourceShape.y + sourceShape.height / 2) - (changedElement.y + changedElement.height / 2);
+                newStartX = sourceShape.x + sourceShape.width / 2;
+                newStartY = sourceShape.y + sourceShape.height / 2;
+                newEndX = el.endX + deltaX;
+                newEndY = el.endY + deltaY;
+              } else if (!sourceShape && targetShape) { // Only target is connected
+                // Move line end point with target, keep start point relative
+                const deltaX = (targetShape.x + targetShape.width / 2) - (changedElement.x + changedElement.width / 2);
+                const deltaY = (targetShape.y + targetShape.height / 2) - (changedElement.y + changedElement.height / 2);
+                newEndX = targetShape.x + targetShape.width / 2;
+                newEndY = targetShape.y + targetShape.height / 2;
+                newStartX = el.startX + deltaX;
+                newStartY = el.startY + deltaY;
+              }
+
+              return {
+                ...el,
+                startX: newStartX,
+                startY: newStartY,
+                endX: newEndX,
+                endY: newEndY,
+              };
+            }
+            return el;
+          });
+        }
+        // If multiple elements are moved (group drag)
+      } else if (Array.isArray(newProps)) { // newProps is an array of {id, x, y, ...}
+        // Create a map of updated elements for quick lookup
+        const updatesMap = new Map(newProps.map(p => [p.id, p]));
+
         updatedElements = prevElements.map(el => {
-          const updated = newProps.find(p => p.id === el.id);
-          return updated ? { ...el, ...updated } : el;
+          const updatedPropsForThisElement = updatesMap.get(el.id);
+          if (updatedPropsForThisElement) {
+            return { ...el, ...updatedPropsForThisElement };
+          }
+          return el;
         });
-      } else { // Single element update
-        updatedElements = prevElements.map(el =>
-          el.id === id ? { ...el, ...newProps } : el
-        );
+
+        // After updating the positions of the dragged elements, update connected lines
+        updatedElements = updatedElements.map(el => {
+          if (el.type === 'line' && (updatesMap.has(el.sourceId) || updatesMap.has(el.targetId))) {
+            const sourceShape = updatedElements.find(s => s.id === el.sourceId);
+            const targetShape = updatedElements.find(s => s.id === el.targetId);
+
+            let newStartX = el.startX;
+            let newStartY = el.startY;
+            let newEndX = el.endX;
+            let newEndY = el.endY;
+
+            if (sourceShape && targetShape) {
+              const { x: connectedStartX, y: connectedStartY } = getShapeConnectionPoint(sourceShape, targetShape.x + targetShape.width / 2, targetShape.y + targetShape.height / 2);
+              const { x: connectedEndX, y: connectedEndY } = getShapeConnectionPoint(targetShape, sourceShape.x + sourceShape.width / 2, sourceShape.y + sourceShape.height / 2);
+              newStartX = connectedStartX;
+              newStartY = connectedStartY;
+              newEndX = connectedEndX;
+              newEndY = connectedEndY;
+            } else if (sourceShape && !targetShape) { // Only source is connected and moved
+              const initialSource = prevElements.find(s => s.id === el.sourceId);
+              if (initialSource) {
+                const deltaX = (sourceShape.x + sourceShape.width / 2) - (initialSource.x + initialSource.width / 2);
+                const deltaY = (sourceShape.y + sourceShape.height / 2) - (initialSource.y + initialSource.height / 2);
+                newStartX = sourceShape.x + sourceShape.width / 2;
+                newStartY = sourceShape.y + sourceShape.height / 2;
+                newEndX = el.endX + deltaX;
+                newEndY = el.endY + deltaY;
+              }
+            } else if (!sourceShape && targetShape) { // Only target is connected and moved
+              const initialTarget = prevElements.find(s => s.id === el.targetId);
+              if (initialTarget) {
+                const deltaX = (targetShape.x + targetShape.width / 2) - (initialTarget.x + initialTarget.width / 2);
+                const deltaY = (targetShape.y + targetShape.height / 2) - (initialTarget.y + initialTarget.height / 2);
+                newEndX = targetShape.x + targetShape.width / 2;
+                newEndY = targetShape.y + targetShape.height / 2;
+                newStartX = el.startX + deltaX;
+                newStartY = el.startY + deltaY;
+              }
+            }
+            return {
+              ...el,
+              startX: newStartX,
+              startY: newStartY,
+              endX: newEndX,
+              endY: newEndY,
+            };
+          }
+          return el;
+        });
       }
 
       if (commitToHistory) {
-        pushState(updatedElements); // Only push to history when commitToHistory is true
+        pushState(updatedElements);
       }
       return updatedElements;
     });
-  }, []);
+  }, [diagramElements]); // Dependency on diagramElements to access latest element states
+
 
   // Handler for adding a new element (from manual drawing tools or paste)
   const handleAddElement = useCallback((newElement) => {
@@ -129,7 +241,6 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
     setActiveTool(TOOL_TYPE.SELECT); // Reset tool after generation
 
     try {
-      // Use the imported geminiService instance directly
       const newElements = await geminiService.generateDiagramFromPrompt(aiPrompt);
       setDiagramElements(newElements);
       pushState(newElements); // Push the generated state to history
@@ -175,7 +286,6 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
       });
       const currentElementJson = JSON.stringify(simplifiedElements);
 
-      // Use the imported geminiService instance directly
       const refinedElementsData = await geminiService.refineElement(currentElementJson, aiRefinePrompt);
 
       setDiagramElements(prevElements => {
@@ -287,7 +397,13 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
       onConfirm: () => {
         setDiagramElements(prevElements => {
           const idsToDelete = selectedElementId ? [selectedElementId] : selectedElementsIds;
-          const updatedElements = prevElements.filter(el => !idsToDelete.includes(el.id));
+          let updatedElements = prevElements.filter(el => !idsToDelete.includes(el.id));
+          
+          // Also delete any lines connected to the deleted shapes
+          updatedElements = updatedElements.filter(el => 
+            el.type !== 'line' || (!idsToDelete.includes(el.sourceId) && !idsToDelete.includes(el.targetId))
+          );
+
           pushState(updatedElements); // Push state after deletion
           return updatedElements;
         });
@@ -339,6 +455,9 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
           startY: el.startY + offset,
           endX: el.endX + offset,
           endY: el.endY + offset,
+          // When pasting lines, clear source/target IDs as connections are broken
+          sourceId: null,
+          targetId: null,
         };
       } else {
         return {
@@ -400,22 +519,46 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
   const handlePropertyChange = (key, value) => {
     setDiagramElements(prevElements => {
       const updatedElements = prevElements.map(el => {
-        // Apply property change only to the single selected element
-        // If multiple elements are selected, properties panel should ideally be disabled or apply to all.
-        // For now, it only applies to `selectedElementId`.
         if (el.id === selectedElementId) {
           // Special handling for text vs. label
-          if (el.type === 'text' && key === 'label') { // If it's a text element and label is being changed, update 'text'
+          if (el.type === 'text' && key === 'label') {
             return { ...el, text: value };
-          } else if (el.type !== 'text' && key === 'text') { // If it's a shape and text is being changed, update 'label'
+          } else if (el.type !== 'text' && key === 'text') {
              return { ...el, label: value };
           }
           return { ...el, [key]: value };
         }
         return el;
       });
-      pushState(updatedElements); // Push state immediately for property changes
-      return updatedElements;
+      // Trigger a re-evaluation of line positions if a connected shape's properties change
+      // This is a simplified approach; a more robust solution might involve a dedicated
+      // function to update all line coordinates based on current shape positions.
+      const elementsAfterPropertyChange = updatedElements.map(el => {
+        if (el.type === 'line' && (el.sourceId || el.targetId)) {
+          const sourceShape = updatedElements.find(s => s.id === el.sourceId);
+          const targetShape = updatedElements.find(s => s.id === el.targetId);
+
+          if (sourceShape && targetShape) {
+            const { x: startX, y: startY } = getShapeConnectionPoint(sourceShape, targetShape.x + targetShape.width / 2, targetShape.y + targetShape.height / 2);
+            const { x: endX, y: endY } = getShapeConnectionPoint(targetShape, sourceShape.x + sourceShape.width / 2, sourceShape.y + sourceShape.height / 2);
+            return { ...el, startX, startY, endX, endY };
+          } else if (sourceShape) { // Only source connected
+            // If the source shape's position changed, update line start
+            const newStartX = sourceShape.x + sourceShape.width / 2;
+            const newStartY = sourceShape.y + sourceShape.height / 2;
+            return { ...el, startX: newStartX, startY: newStartY };
+          } else if (targetShape) { // Only target connected
+            // If the target shape's position changed, update line end
+            const newEndX = targetShape.x + targetShape.width / 2;
+            const newEndY = targetShape.y + targetShape.height / 2;
+            return { ...el, endX: newEndX, endY: newEndY };
+          }
+        }
+        return el;
+      });
+
+      pushState(elementsAfterPropertyChange); // Push state immediately for property changes
+      return elementsAfterPropertyChange;
     });
   };
 
@@ -515,7 +658,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
 
       <div className="w-full max-w-4xl flex flex-col lg:flex-row gap-6">
         {/* Toolbar */}
-        <div className="lg:w-1/5 bg-white rounded-xl shadow-lg p-4 flex flex-col items-start space-y-3"> {/* Adjusted width to 1/5 */}
+        <div className="lg:w-1/5 bg-white rounded-xl shadow-lg p-4 flex flex-col items-start space-y-3">
           <h2 className="text-xl font-semibold text-gray-800 mb-2">Tools</h2>
           {/* Select Tool */}
           <button
@@ -622,7 +765,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
         </div>
 
         {/* Canvas Area */}
-        <div className="lg:w-3/5 bg-white rounded-xl shadow-lg flex items-center justify-center overflow-hidden relative"> {/* Adjusted width to 3/5 */}
+        <div className="lg:w-3/5 bg-white rounded-xl shadow-lg flex items-center justify-center overflow-hidden relative">
           {isLoadingAI && (
             <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-80 z-10 rounded-xl">
               <div className="flex flex-col items-center text-blue-600">
@@ -649,7 +792,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
           <PropertiesPanel
             selectedElementProps={selectedElementProps}
             onPropertyChange={handlePropertyChange}
-            className="lg:w-1/5" // Added width class for consistent layout
+            className="lg:w-1/5"
           />
         )}
       </div>
