@@ -7,18 +7,25 @@ import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generate
 import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager';
 import { elementsToSvgString } from '../utils/exportUtils';
 // Import Lucide icons
-import { Settings, Undo, Redo, Save, FolderOpen, Eraser, MousePointer2, Square, Circle, Diamond, LineChart, Type, Trash2, Download, Image } from 'lucide-react';
+import {
+  Settings, Undo, Redo, Save, FolderOpen, Eraser,
+  MousePointer2, Square, Circle, Diamond, LineChart, Type,
+  Trash2, Download, Image, Copy, ClipboardPaste // Added Copy and ClipboardPaste icons
+} from 'lucide-react';
 
 const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
   const [diagramElements, setDiagramElements] = useState([]);
   const [aiPrompt, setAiPrompt] = useState("Generate a simple flowchart with a start, a process, a decision, and two end points.");
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [appMessage, setAppMessage] = useState('');
-  const [selectedElementId, setSelectedElementId] = useState(null); // For single selection (e.g., for resize)
-  const [selectedElementsIds, setSelectedElementsIds] = useState([]); // New: For multi-selection
+  const [selectedElementId, setSelectedElementId] = useState(null);
+  const [selectedElementsIds, setSelectedElementsIds] = useState([]);
   const [selectedElementProps, setSelectedElementProps] = useState(null);
   const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
   const [activeTool, setActiveTool] = useState(TOOL_TYPE.SELECT);
+
+  // New: State to hold copied elements
+  const [copiedElements, setCopiedElements] = useState([]);
 
   // Ref for the canvas element in DiagramApp (needed for PNG export)
   const canvasRef = useRef(null);
@@ -61,7 +68,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     setSelectedElementId(id);
   }, []);
 
-  // New: Callback for multi-element selection from Canvas
+  // Callback for multi-element selection from Canvas
   const handleElementsSelect = useCallback((ids) => {
     setSelectedElementsIds(ids);
   }, []);
@@ -89,7 +96,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     });
   }, []);
 
-  // Handler for adding a new element (from manual drawing tools)
+  // Handler for adding a new element (from manual drawing tools or paste)
   const handleAddElement = useCallback((newElement) => {
     setDiagramElements(prevElements => {
       const updatedElements = [...prevElements, newElement];
@@ -208,7 +215,7 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
 
     setModalContent({
       title: 'Delete Element(s)',
-      message: `Are you sure you want to delete the selected element${selectedElementsIds.length > 1 ? 's' : ''}? This action can be undone.`,
+      message: `Are you sure you want to delete the selected element${selectedElementsIds.length > 1 || (selectedElementId && selectedElementsIds.length === 0) ? '(s)' : ''}? This action can be undone.`,
       showConfirm: true,
       confirmText: 'Delete',
       onConfirm: () => {
@@ -226,6 +233,69 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
     });
     setShowModal(true);
   };
+
+  // --- Copy/Paste Handlers ---
+  const handleCopy = () => {
+    let elementsToCopy = [];
+    if (selectedElementId) {
+      const element = diagramElements.find(el => el.id === selectedElementId);
+      if (element) elementsToCopy.push(element);
+    } else if (selectedElementsIds.length > 0) {
+      elementsToCopy = diagramElements.filter(el => selectedElementsIds.includes(el.id));
+    }
+
+    if (elementsToCopy.length > 0) {
+      setCopiedElements(JSON.parse(JSON.stringify(elementsToCopy))); // Deep copy to prevent reference issues
+      setAppMessage(`Copied ${elementsToCopy.length} element(s).`);
+    } else {
+      setAppMessage("No element(s) selected to copy.");
+    }
+  };
+
+  const handlePaste = () => {
+    if (copiedElements.length === 0) {
+      setAppMessage("Nothing to paste. Copy element(s) first.");
+      return;
+    }
+
+    const pastedNewIds = [];
+    const newElements = copiedElements.map(el => {
+      const newId = generateUniqueId();
+      pastedNewIds.push(newId);
+      const offset = 20; // Offset for pasted elements
+
+      // Create a new element with new ID and offset position
+      if (el.type === 'line') {
+        return {
+          ...el,
+          id: newId,
+          startX: el.startX + offset,
+          startY: el.startY + offset,
+          endX: el.endX + offset,
+          endY: el.endY + offset,
+        };
+      } else {
+        return {
+          ...el,
+          id: newId,
+          x: el.x + offset,
+          y: el.y + offset,
+        };
+      }
+    });
+
+    setDiagramElements(prevElements => {
+      const updatedElements = [...prevElements, ...newElements];
+      pushState(updatedElements); // Push state after pasting
+      return updatedElements;
+    });
+
+    // Select the newly pasted elements
+    setSelectedElementId(null);
+    setSelectedElementsIds(pastedNewIds);
+    setAppMessage(`Pasted ${newElements.length} element(s).`);
+  };
+
 
   // --- Export Handlers ---
   const handleExportPng = () => {
@@ -440,12 +510,30 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
           <h3 className="text-lg font-semibold text-gray-700 mb-1">Actions</h3>
           <button
             onClick={handleDeleteElement}
-            disabled={!selectedElementId && selectedElementsIds.length === 0} // Disable if no element is selected
+            disabled={!selectedElementId && selectedElementsIds.length === 0}
             className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
               ${(!selectedElementId && selectedElementsIds.length === 0) ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-100 text-red-700 hover:bg-red-200'}`}
           >
             <Trash2 size={20} />
             <span>Delete</span>
+          </button>
+          <button
+            onClick={handleCopy}
+            disabled={!selectedElementId && selectedElementsIds.length === 0}
+            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
+              ${(!selectedElementId && selectedElementsIds.length === 0) ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
+          >
+            <Copy size={20} />
+            <span>Copy</span>
+          </button>
+          <button
+            onClick={handlePaste}
+            disabled={copiedElements.length === 0}
+            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
+              ${copiedElements.length === 0 ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
+          >
+            <ClipboardPaste size={20} />
+            <span>Paste</span>
           </button>
           <div className="w-full border-t border-gray-200 my-2"></div> {/* Separator */}
 
@@ -481,11 +569,11 @@ const DiagramApp = ({ user, onLogout, geminiService, firebaseService }) => {
             ref={canvasRef}
             diagramElements={diagramElements}
             selectedElementId={selectedElementId}
-            selectedElementsIds={selectedElementsIds} // Pass multi-selection state
+            selectedElementsIds={selectedElementsIds}
             onElementSelect={handleElementSelect}
             onElementChange={handleElementChange}
             onAddElement={handleAddElement}
-            onElementsSelect={handleElementsSelect} // Pass the new handler for multi-selection
+            onElementsSelect={handleElementsSelect}
             activeTool={activeTool}
           />
         </div>

@@ -279,7 +279,7 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
         onElementsSelect([]); // Clear multi-selection
         isDraggingRef.current = true;
         // Store initial mouse position for single element drag to calculate delta
-        dragOffsetRef.current = { x: mouseX, y: mouseY }; // FIX: Store initial mouse position for single element drag
+        dragOffsetRef.current = { x: mouseX, y: mouseY };
         selectedElementInitialPropsRef.current = { ...clickedElement };
       }
     } else {
@@ -495,10 +495,25 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
       const x = Math.min(startX, mouseX);
       const y = Math.min(startY, mouseY);
 
-      // Ensure minimum size for shapes
-      if (width < 10 || height < 10) {
+      const MIN_DRAW_THRESHOLD = 5; // A small threshold to distinguish a drag from a click
+
+      let shouldCreateElement = true;
+
+      if (activeTool === TOOL_TYPE.LINE) {
+        // For a line, if both width AND height are too small, it's just a click
+        if (width < MIN_DRAW_THRESHOLD && height < MIN_DRAW_THRESHOLD) {
+          shouldCreateElement = false;
+        }
+      } else { // For shapes (rectangle, oval, diamond)
+        // For shapes, if either width OR height is too small, don't create
+        if (width < MIN_DRAW_THRESHOLD || height < MIN_DRAW_THRESHOLD) {
+          shouldCreateElement = false;
+        }
+      }
+
+      if (!shouldCreateElement) {
         isDrawingRef.current = false;
-        return; // Don't create tiny elements
+        return; // Don't create tiny elements or accidental clicks
       }
 
       switch (activeTool) {
