@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Canvas from '../components/Canvas';
 import Modal from '../components/Modal';
+import PropertiesPanel from '../components/PropertiesPanel'; // Import the new component
 import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants';
 import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager';
 import { elementsToSvgString } from '../utils/exportUtils';
@@ -13,10 +14,9 @@ import {
   Trash2, Download, Image, Copy, ClipboardPaste, Sparkles
 } from 'lucide-react';
 
-// FIX: Corrected import for geminiService
 import { geminiService } from '../services/GeminiAIService'; // Import the instance directly
 
-const DiagramApp = ({ user, onLogout, firebaseService }) => { // Removed geminiService from props
+const DiagramApp = ({ user, onLogout, firebaseService }) => {
   const [diagramElements, setDiagramElements] = useState([]);
   const [aiPrompt, setAiPrompt] = useState("Generate a simple flowchart with a start, a process, a decision, and two end points.");
   const [isLoadingAI, setIsLoadingAI] = useState(false);
@@ -24,7 +24,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // Removed geminiS
   const [selectedElementId, setSelectedElementId] = useState(null);
   const [selectedElementsIds, setSelectedElementsIds] = useState([]);
   const [selectedElementProps, setSelectedElementProps] = useState(null);
-  const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
+  const [showPropertiesPanel, setShowPropertiesPanel] = useState(false); // State to control panel visibility
   const [activeTool, setActiveTool] = useState(TOOL_TYPE.SELECT);
 
   const [copiedElements, setCopiedElements] = useState([]);
@@ -64,7 +64,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // Removed geminiS
     }
     else {
       setSelectedElementProps(null);
-      setShowPropertiesPanel(false);
+      setShowPropertiesPanel(false); // Hide panel if no single element is selected
     }
   }, [selectedElementId, selectedElementsIds, diagramElements]);
 
@@ -405,9 +405,9 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // Removed geminiS
         // For now, it only applies to `selectedElementId`.
         if (el.id === selectedElementId) {
           // Special handling for text vs. label
-          if (el.type === 'text' && key === 'label') {
+          if (el.type === 'text' && key === 'label') { // If it's a text element and label is being changed, update 'text'
             return { ...el, text: value };
-          } else if (el.type !== 'text' && key === 'text') {
+          } else if (el.type !== 'text' && key === 'text') { // If it's a shape and text is being changed, update 'label'
              return { ...el, label: value };
           }
           return { ...el, [key]: value };
@@ -515,7 +515,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // Removed geminiS
 
       <div className="w-full max-w-4xl flex flex-col lg:flex-row gap-6">
         {/* Toolbar */}
-        <div className="lg:w-1/4 bg-white rounded-xl shadow-lg p-4 flex flex-col items-start space-y-3">
+        <div className="lg:w-1/5 bg-white rounded-xl shadow-lg p-4 flex flex-col items-start space-y-3"> {/* Adjusted width to 1/5 */}
           <h2 className="text-xl font-semibold text-gray-800 mb-2">Tools</h2>
           {/* Select Tool */}
           <button
@@ -622,7 +622,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // Removed geminiS
         </div>
 
         {/* Canvas Area */}
-        <div className="lg:w-3/4 bg-white rounded-xl shadow-lg flex items-center justify-center overflow-hidden relative">
+        <div className="lg:w-3/5 bg-white rounded-xl shadow-lg flex items-center justify-center overflow-hidden relative"> {/* Adjusted width to 3/5 */}
           {isLoadingAI && (
             <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-80 z-10 rounded-xl">
               <div className="flex flex-col items-center text-blue-600">
@@ -643,6 +643,15 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // Removed geminiS
             activeTool={activeTool}
           />
         </div>
+
+        {/* Properties Panel */}
+        {showPropertiesPanel && (
+          <PropertiesPanel
+            selectedElementProps={selectedElementProps}
+            onPropertyChange={handlePropertyChange}
+            className="lg:w-1/5" // Added width class for consistent layout
+          />
+        )}
       </div>
 
       {/* New: AI Refinement Section */}
