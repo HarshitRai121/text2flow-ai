@@ -1,6 +1,7 @@
 // src/services/FirebaseService.js
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+// Corrected imports for modular v9+ auth functions
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
 import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
 let app = null;
@@ -76,7 +77,8 @@ export const getFirestoreInstance = () => {
 
 export const loginUser = async (email, password) => {
     try {
-        await auth.signInWithEmailAndPassword(email, password);
+        // Corrected: Use modular syntax for signInWithEmailAndPassword
+        await signInWithEmailAndPassword(auth, email, password);
         console.log("User logged in successfully.");
     } catch (error) {
         console.error("Login error:", error);
@@ -86,7 +88,8 @@ export const loginUser = async (email, password) => {
 
 export const signupUser = async (email, password) => {
     try {
-        await auth.createUserWithEmailAndPassword(email, password);
+        // Corrected: Use modular syntax for createUserWithEmailAndPassword
+        await createUserWithEmailAndPassword(auth, email, password);
         console.log("User signed up successfully.");
     } catch (error) {
         console.error("Signup error:", error);

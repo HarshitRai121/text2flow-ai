@@ -8,6 +8,8 @@ import DiagramListModal from '../components/DiagramListModal';
 import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants';
 import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager';
 import { elementsToSvgString } from '../utils/exportUtils';
+// Import drawing functions for PNG export directly
+import { drawRectangle, drawOval, drawDiamond, drawLine, drawTextElement } from '../utils/drawingUtils';
 import { getShapeConnectionPoint } from '../services/GeminiAIService';
 // Import Lucide icons
 import {
@@ -35,7 +37,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
   const [aiRefinePrompt, setAiRefinePrompt] = useState("");
   const [isLoadingRefineAI, setIsLoadingRefineAI] = useState(false);
 
-  // Ref for the canvas element in DiagramApp (needed for PNG export)
+  // Ref for the canvas element in DiagramApp (needed for PNG export and dimensions)
   const canvasRef = useRef(null);
 
   // Modal state for general confirmations/alerts
@@ -47,6 +49,11 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
   const [savedDiagrams, setSavedDiagrams] = useState([]);
   const [loadingDiagrams, setLoadingDiagrams] = useState(false);
   const [diagramListError, setDiagramListError] = useState('');
+
+  // New states for Canvas pan/zoom (controlled by DiagramApp for initial view)
+  const [canvasInitialOffsetX, setCanvasInitialOffsetX] = useState(0);
+  const [canvasInitialOffsetY, setCanvasInitialOffsetY] = useState(0);
+  const [canvasInitialScale, setCanvasInitialScale] = useState(1);
 
   // --- History Management ---
   const isInitialRender = useRef(true);
@@ -75,6 +82,94 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
     }
   }, [selectedElementId, selectedElementsIds, diagramElements]);
 
+  // --- Canvas Fit-to-View Logic ---
+  const fitElementsToView = useCallback((elements) => {
+    if (!canvasRef.current || elements.length === 0) {
+      setCanvasInitialOffsetX(0);
+      setCanvasInitialOffsetY(0);
+      setCanvasInitialScale(1);
+      return;
+    }
+
+    const canvasDomWidth = canvasRef.current.width;
+    const canvasDomHeight = canvasRef.current.height;
+
+    // Calculate bounding box of all elements
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+    elements.forEach(el => {
+      let elMinX, elMinY, elMaxX, elMaxY;
+
+      if (el.type === 'line') {
+        elMinX = Math.min(el.startX, el.endX);
+        elMinY = Math.min(el.startY, el.endY);
+        elMaxX = Math.max(el.startX, el.endX);
+        elMaxY = Math.max(el.startY, el.endY);
+      } else if (el.type === 'text') {
+        // Approximate text bounds for fit-to-view
+        const dummyCanvas = document.createElement('canvas');
+        const dummyCtx = dummyCanvas.getContext('2d');
+        dummyCtx.font = `${el.fontSize || DEFAULT_ELEMENT_STYLE.fontSize}px Inter, sans-serif`;
+        const metrics = dummyCtx.measureText(el.text);
+        const textWidth = metrics.width;
+        const textHeight = (el.fontSize || DEFAULT_ELEMENT_STYLE.fontSize) * el.text.split('\n').length * 1.2;
+        elMinX = el.x;
+        elMinY = el.y;
+        elMaxX = el.x + textWidth;
+        elMaxY = el.y + textHeight;
+      }
+      else { // Shapes
+        elMinX = el.x;
+        elMinY = el.y;
+        elMaxX = el.x + el.width;
+        elMaxY = el.y + el.height;
+      }
+
+      minX = Math.min(minX, elMinX);
+      minY = Math.min(minY, elMinY);
+      maxX = Math.max(maxX, elMaxX);
+      maxY = Math.max(maxY, elMaxY);
+    });
+
+    const contentWidth = maxX - minX;
+    const contentHeight = maxY - minY;
+
+    // Add some padding around the content
+    const padding = 50;
+    const paddedContentWidth = contentWidth + 2 * padding;
+    const paddedContentHeight = contentHeight + 2 * padding;
+
+    // Calculate scale to fit content within canvas
+    const scaleX = canvasDomWidth / paddedContentWidth;
+    const scaleY = canvasDomHeight / paddedContentHeight;
+    let newScale = Math.min(scaleX, scaleY);
+
+    // Ensure scale doesn't zoom in too much or too little
+    newScale = Math.max(0.2, Math.min(newScale, 1.0)); // Min zoom 20%, Max zoom 100%
+
+    // Calculate offset to center the scaled content
+    const scaledContentWidth = contentWidth * newScale;
+    const scaledContentHeight = contentHeight * newScale;
+
+    const newOffsetX = (canvasDomWidth - scaledContentWidth) / 2 - minX * newScale;
+    const newOffsetY = (canvasDomHeight - scaledContentHeight) / 2 - minY * newScale;
+
+    setCanvasInitialOffsetX(newOffsetX);
+    setCanvasInitialOffsetY(newOffsetY);
+    setCanvasInitialScale(newScale);
+  }, []);
+
+  // Call fitElementsToView when diagramElements change (after load/generate)
+  useEffect(() => {
+    if (diagramElements.length > 0) {
+      fitElementsToView(diagramElements);
+    } else {
+      // Reset view to default when canvas is empty
+      setCanvasInitialOffsetX(0);
+      setCanvasInitialOffsetY(0);
+      setCanvasInitialScale(1);
+    }
+  }, [diagramElements, fitElementsToView]);
 
   // --- Handlers for Canvas Interactions ---
   const handleElementSelect = useCallback((id) => {
@@ -87,130 +182,62 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
 
   // This handler is called for both movement and resizing (continuous updates)
   // and also for committing to history (discrete updates on mouseUp/blur)
-  const handleElementChange = useCallback((id, newProps, commitToHistory = false) => {
+  // It now also supports bulk updates for smooth dragging/resizing from Canvas.js
+  const handleElementChange = useCallback((id, newPropsOrElements, commitToHistory = false) => {
     setDiagramElements(prevElements => {
       let updatedElements = [...prevElements];
-      
-      // Find the element being changed (could be a shape or a line)
-      const changedElementIndex = updatedElements.findIndex(el => el.id === id);
-      const changedElement = changedElementIndex !== -1 ? updatedElements[changedElementIndex] : null;
 
-      if (changedElement) {
-        // Apply the new properties to the changed element
-        updatedElements[changedElementIndex] = { ...changedElement, ...newProps };
+      if (Array.isArray(newPropsOrElements)) { // This is a bulk update from Canvas.js (e.g., after drag/resize)
+        const updatedElementsMap = new Map(newPropsOrElements.map(el => [el.id, el]));
+        updatedElements = prevElements.map(el => updatedElementsMap.has(el.id) ? updatedElementsMap.get(el.id) : el);
+        // No need to update connected lines here, Canvas.js already did it on temp elements
+      } else { // Single element update (e.g., from properties panel or text input)
+        const changedElementIndex = updatedElements.findIndex(el => el.id === id);
+        const changedElement = changedElementIndex !== -1 ? updatedElements[changedElementIndex] : null;
 
-        // If the changed element is a shape, update all connected lines
-        if (changedElement.type !== 'line' && (newProps.x !== undefined || newProps.y !== undefined || newProps.width !== undefined || newProps.height !== undefined)) {
-          updatedElements = updatedElements.map(el => {
-            if (el.type === 'line' && (el.sourceId === id || el.targetId === id)) {
-              const sourceShape = updatedElements.find(s => s.id === el.sourceId);
-              const targetShape = updatedElements.find(s => s.id === el.targetId);
+        if (changedElement) {
+          updatedElements[changedElementIndex] = { ...changedElement, ...newPropsOrElements };
 
-              let newStartX = el.startX;
-              let newStartY = el.startY;
-              let newEndX = el.endX;
-              let newEndY = el.endY;
+          // If the changed element is a shape, update all connected lines
+          if (changedElement.type !== 'line' && (newPropsOrElements.x !== undefined || newPropsOrElements.y !== undefined || newPropsOrElements.width !== undefined || newPropsOrElements.height !== undefined)) {
+            updatedElements = updatedElements.map(el => {
+              if (el.type === 'line' && (el.sourceId === id || el.targetId === id)) {
+                const sourceShape = updatedElements.find(s => s.id === el.sourceId);
+                const targetShape = updatedElements.find(s => s.id === el.targetId);
 
-              if (sourceShape && targetShape) {
-                // Calculate new connection points based on updated shape positions
-                const { x: connectedStartX, y: connectedStartY } = getShapeConnectionPoint(sourceShape, targetShape.x + targetShape.width / 2, targetShape.y + targetShape.height / 2);
-                const { x: connectedEndX, y: connectedEndY } = getShapeConnectionPoint(targetShape, sourceShape.x + sourceShape.width / 2, sourceShape.y + sourceShape.height / 2);
-                
-                newStartX = connectedStartX;
-                newStartY = connectedStartY;
-                newEndX = connectedEndX;
-                newEndY = connectedEndY;
-              } else if (sourceShape && !targetShape) { // Only source is connected
-                // Move line start point with source, keep end point relative
-                const deltaX = (sourceShape.x + sourceShape.width / 2) - (changedElement.x + changedElement.width / 2);
-                const deltaY = (sourceShape.y + sourceShape.height / 2) - (changedElement.y + changedElement.height / 2);
-                newStartX = sourceShape.x + sourceShape.width / 2;
-                newStartY = sourceShape.y + sourceShape.height / 2;
-                newEndX = el.endX + deltaX;
-                newEndY = el.endY + deltaY;
-              } else if (!sourceShape && targetShape) { // Only target is connected
-                // Move line end point with target, keep start point relative
-                const deltaX = (targetShape.x + targetShape.width / 2) - (changedElement.x + changedElement.width / 2);
-                const deltaY = (targetShape.y + targetShape.height / 2) - (changedElement.y + changedElement.height / 2);
-                newEndX = targetShape.x + targetShape.width / 2;
-                newEndY = targetShape.y + targetShape.height / 2;
-                newStartX = el.startX + deltaX;
-                newStartY = el.startY + deltaY;
+                let newStartX = el.startX;
+                let newStartY = el.startY;
+                let newEndX = el.endX;
+                let newEndY = el.endY;
+
+                if (sourceShape && targetShape) {
+                  const { x: connectedStartX, y: connectedStartY } = getShapeConnectionPoint(sourceShape, targetShape.x + targetShape.width / 2, targetShape.y + targetShape.height / 2);
+                  const { x: connectedEndX, y: connectedEndY } = getShapeConnectionPoint(targetShape, sourceShape.x + sourceShape.width / 2, sourceShape.y + sourceShape.height / 2);
+                  newStartX = connectedStartX;
+                  newStartY = connectedStartY;
+                  newEndX = connectedEndX;
+                  newEndY = connectedEndY;
+                } else if (sourceShape) {
+                  const { x: connX, y: connY } = getShapeConnectionPoint(sourceShape, el.endX, el.endY);
+                  newStartX = connX;
+                  newStartY = connY;
+                } else if (targetShape) {
+                  const { x: connX, y: connY } = getShapeConnectionPoint(targetShape, el.startX, el.startY);
+                  newEndX = connX;
+                  newEndY = connY;
+                }
+                return {
+                  ...el,
+                  startX: newStartX,
+                  startY: newStartY,
+                  endX: newEndX,
+                  endY: newEndY,
+                };
               }
-
-              return {
-                ...el,
-                startX: newStartX,
-                startY: newStartY,
-                endX: newEndX,
-                endY: newEndY,
-              };
-            }
-            return el;
-          });
+              return el;
+            });
+          }
         }
-        // If multiple elements are moved (group drag)
-      } else if (Array.isArray(newProps)) { // newProps is an array of {id, x, y, ...}
-        // Create a map of updated elements for quick lookup
-        const updatesMap = new Map(newProps.map(p => [p.id, p]));
-
-        updatedElements = prevElements.map(el => {
-          const updatedPropsForThisElement = updatesMap.get(el.id);
-          if (updatedPropsForThisElement) {
-            return { ...el, ...updatedPropsForThisElement };
-          }
-          return el;
-        });
-
-        // After updating the positions of the dragged elements, update connected lines
-        updatedElements = updatedElements.map(el => {
-          if (el.type === 'line' && (updatesMap.has(el.sourceId) || updatesMap.has(el.targetId))) {
-            const sourceShape = updatedElements.find(s => s.id === el.sourceId);
-            const targetShape = updatedElements.find(s => s.id === el.targetId);
-
-            let newStartX = el.startX;
-            let newStartY = el.startY;
-            let newEndX = el.endX;
-            let newEndY = el.endY;
-
-            if (sourceShape && targetShape) {
-              const { x: connectedStartX, y: connectedStartY } = getShapeConnectionPoint(sourceShape, targetShape.x + targetShape.width / 2, targetShape.y + targetShape.height / 2);
-              const { x: connectedEndX, y: connectedEndY } = getShapeConnectionPoint(targetShape, sourceShape.x + sourceShape.width / 2, sourceShape.y + sourceShape.height / 2);
-              newStartX = connectedStartX;
-              newStartY = connectedStartY;
-              newEndX = connectedEndX;
-              newEndY = connectedEndY;
-            } else if (sourceShape && !targetShape) { // Only source is connected and moved
-              const initialSource = prevElements.find(s => s.id === el.sourceId);
-              if (initialSource) {
-                const deltaX = (sourceShape.x + sourceShape.width / 2) - (initialSource.x + initialSource.width / 2);
-                const deltaY = (sourceShape.y + sourceShape.height / 2) - (initialSource.y + initialSource.height / 2);
-                newStartX = sourceShape.x + sourceShape.width / 2;
-                newStartY = sourceShape.y + sourceShape.height / 2;
-                newEndX = el.endX + deltaX;
-                newEndY = el.endY + deltaY;
-              }
-            } else if (!sourceShape && targetShape) { // Only target is connected and moved
-              const initialTarget = prevElements.find(s => s.id === el.targetId);
-              if (initialTarget) {
-                const deltaX = (targetShape.x + targetShape.width / 2) - (initialTarget.x + initialTarget.width / 2);
-                const deltaY = (targetShape.y + targetShape.height / 2) - (initialTarget.y + initialTarget.height / 2);
-                newEndX = targetShape.x + targetShape.width / 2;
-                newEndY = targetShape.y + targetShape.height / 2;
-                newStartX = el.startX + deltaX;
-                newStartY = el.startY + deltaY;
-              }
-            }
-            return {
-              ...el,
-              startX: newStartX,
-              startY: newStartY,
-              endX: newEndX,
-              endY: newEndY,
-            };
-          }
-          return el;
-        });
       }
 
       if (commitToHistory) {
@@ -252,6 +279,8 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
       setDiagramElements(newElements);
       pushState(newElements);
       setAppMessage('Diagram generated successfully!');
+      // After generation, fit elements to view
+      fitElementsToView(newElements);
     } catch (error) {
       setAppMessage(`Error: ${error.message}`);
       console.error("AI Generation Error:", error);
@@ -373,6 +402,8 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
       setAppMessage(`Diagram "${diagramName}" loaded successfully!`);
       setSelectedElementId(null);
       setSelectedElementsIds([]);
+      // After loading, fit elements to view
+      fitElementsToView(loadedData);
     } catch (error) {
       setAppMessage(`Error loading: ${error.message}`);
       console.error("Load error:", error);
@@ -387,11 +418,10 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
       confirmText: 'Delete',
       onConfirm: async () => {
         setAppMessage('');
-        setShowModal(false); // Close confirmation modal
+        setShowModal(false);
         try {
           await firebaseService.deleteDiagram(diagramName);
           setAppMessage(`Diagram "${diagramName}" deleted successfully!`);
-          // Refresh the list of diagrams in the modal
           const updatedDiagrams = await firebaseService.listDiagrams();
           setSavedDiagrams(updatedDiagrams);
         } catch (error) {
@@ -399,7 +429,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
           console.error("Delete error:", error);
         }
       },
-      zIndex: 60, // Set a higher z-index for this confirmation modal
+      zIndex: 60,
     });
     setShowModal(true);
   };
@@ -525,10 +555,10 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
         };
       } else {
         return {
-          ...el,
           id: newId,
           x: el.x + offset,
           y: el.y + offset,
+          ...el, // Ensure all other properties are copied
         };
       }
     });
@@ -553,7 +583,30 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
       return;
     }
 
-    const image = canvas.toDataURL('image/png');
+    // Create a temporary canvas for high-resolution export
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = CANVAS_WIDTH; // Use the large virtual width
+    exportCanvas.height = CANVAS_HEIGHT; // Use the large virtual height
+    const ctx = exportCanvas.getContext('2d');
+
+    // Fill background with white for PNG (transparent by default)
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+
+    // Draw elements onto the export canvas without any pan/zoom transformations
+    diagramElements.forEach(element => {
+      // Draw elements without selection/handles for clean export
+      switch (element.type) {
+        case 'rectangle': drawRectangle(ctx, element, false); break;
+        case 'oval': drawOval(ctx, element, false); break;
+        case 'diamond': drawDiamond(ctx, element, false); break;
+        case 'line': drawLine(ctx, element, false); break;
+        case 'text': drawTextElement(ctx, element, false); break;
+        default: break;
+      }
+    });
+
+    const image = exportCanvas.toDataURL('image/png');
     const link = document.createElement('a');
     link.href = image;
     link.download = 'text2flow-diagram.png';
@@ -620,10 +673,13 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
   };
 
   return (
+    // Main container: min-h-screen for full height, flex-col for stacking
+    // Responsive padding: p-4 for small screens, sm:p-6 for medium/large
     <div className="min-h-screen bg-gray-100 flex flex-col items-center p-4 sm:p-6">
-      <header className="w-full max-w-4xl flex justify-between items-center bg-white rounded-xl shadow-lg p-4 mb-6">
-        <h1 className="text-3xl font-bold text-blue-600">Text2Flow AI</h1>
-        <div className="flex items-center space-x-4">
+      {/* Header: max-w-full on mobile, max-w-4xl on larger screens */}
+      <header className="w-full max-w-full sm:max-w-4xl flex flex-col sm:flex-row justify-between items-center bg-white rounded-xl shadow-lg p-4 mb-6">
+        <h1 className="text-2xl sm:text-3xl font-bold text-blue-600 mb-2 sm:mb-0">Text2Flow AI</h1>
+        <div className="flex flex-col sm:flex-row items-center space-y-2 sm:space-y-0 sm:space-x-4 w-full sm:w-auto">
           {user && user.isAnonymous ? (
             <span className="text-gray-600 text-sm">Guest User: {user.uid.substring(0, 8)}...</span>
           ) : (
@@ -631,35 +687,37 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
           )}
           <button
             onClick={onLogout}
-            className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg shadow-md transition-colors duration-200"
+            className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg shadow-md transition-colors duration-200 w-full sm:w-auto"
           >
             Logout
           </button>
         </div>
       </header>
 
-      <div className="w-full max-w-4xl bg-white rounded-xl shadow-lg p-6 mb-8">
+      {/* AI Prompt Section: max-w-full on mobile, max-w-4xl on larger screens */}
+      <div className="w-full max-w-full sm:max-w-4xl bg-white rounded-xl shadow-lg p-4 sm:p-6 mb-6">
         <label htmlFor="ai-prompt" className="block text-lg font-semibold text-gray-800 mb-2">
           Describe your diagram:
         </label>
         <textarea
           id="ai-prompt"
-          className="w-full p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 resize-y min-h-[100px] text-gray-700"
+          className="w-full p-3 sm:p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 resize-y min-h-[80px] sm:min-h-[100px] text-gray-700"
           placeholder="e.g., 'A flowchart with a start oval, a process rectangle, a decision diamond, and two end points.'"
           value={aiPrompt}
           onChange={(e) => setAiPrompt(e.target.value)}
           rows="4"
         ></textarea>
-        <div className="flex flex-wrap gap-4 mt-4">
+        {/* Buttons: flex-wrap for mobile, gap-2 for tighter spacing */}
+        <div className="flex flex-wrap justify-center gap-2 sm:gap-4 mt-4">
           <button
             onClick={handleGenerateDiagram}
-            className={`flex-1 min-w-[180px] px-6 py-3 rounded-lg text-white font-semibold shadow-md transition-all duration-300
+            className={`flex-1 min-w-[150px] sm:min-w-[180px] px-4 py-2 sm:px-6 sm:py-3 rounded-lg text-white font-semibold shadow-md transition-all duration-300
               ${isLoadingAI ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2'}`}
             disabled={isLoadingAI}
           >
             {isLoadingAI ? (
               <span className="flex items-center justify-center">
-                <LoadingSpinner className="-ml-1 mr-3 h-5 w-5 text-white" />
+                <LoadingSpinner className="-ml-1 mr-2 sm:mr-3 h-4 w-4 sm:h-5 sm:w-5 text-white" />
                 Generating...
               </span>
             ) : (
@@ -668,166 +726,170 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
           </button>
           <button
             onClick={handleSaveDiagramPrompt}
-            className="flex-1 min-w-[120px] bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 flex items-center justify-center space-x-2"
+            className="flex-1 min-w-[100px] sm:min-w-[120px] bg-green-500 hover:bg-green-600 text-white px-4 py-2 sm:px-6 sm:py-3 rounded-lg shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 flex items-center justify-center space-x-2"
           >
-            <Save size={20} />
+            <Save size={18} />
             <span>Save</span>
           </button>
           <button
             onClick={handleOpenLoadDiagramModal}
-            className="flex-1 min-w-[120px] bg-yellow-500 hover:bg-yellow-600 text-white px-6 py-3 rounded-lg shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-offset-2 flex items-center justify-center space-x-2"
+            className="flex-1 min-w-[100px] sm:min-w-[120px] bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 sm:px-6 sm:py-3 rounded-lg shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-offset-2 flex items-center justify-center space-x-2"
           >
-            <FolderOpen size={20} />
+            <FolderOpen size={18} />
             <span>Load</span>
           </button>
           <button
             onClick={handleUndo}
             disabled={!canUndo()}
-            className={`flex-1 min-w-[100px] px-6 py-3 rounded-lg text-gray-800 font-semibold shadow-md transition-all duration-300 flex items-center justify-center space-x-2
+            className={`flex-1 min-w-[80px] sm:min-w-[100px] px-4 py-2 sm:px-6 sm:py-3 rounded-lg text-gray-800 font-semibold shadow-md transition-all duration-300 flex items-center justify-center space-x-2
               ${!canUndo() ? 'bg-gray-300 cursor-not-allowed' : 'bg-gray-200 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2'}`}
           >
-            <Undo size={20} />
+            <Undo size={18} />
             <span>Undo</span>
           </button>
           <button
             onClick={handleRedo}
             disabled={!canRedo()}
-            className={`flex-1 min-w-[100px] px-6 py-3 rounded-lg text-gray-800 font-semibold shadow-md transition-all duration-300 flex items-center justify-center space-x-2
+            className={`flex-1 min-w-[80px] sm:min-w-[100px] px-4 py-2 sm:px-6 sm:py-3 rounded-lg text-gray-800 font-semibold shadow-md transition-all duration-300 flex items-center justify-center space-x-2
               ${!canRedo() ? 'bg-gray-300 cursor-not-allowed' : 'bg-gray-200 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2'}`}
           >
-            <Redo size={20} />
+            <Redo size={18} />
             <span>Redo</span>
           </button>
           <button
             onClick={handleClearCanvas}
-            className="flex-1 min-w-[120px] bg-red-400 hover:bg-red-500 text-white px-6 py-3 rounded-lg shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-300 focus:ring-offset-2 flex items-center justify-center space-x-2"
+            className="flex-1 min-w-[100px] sm:min-w-[120px] bg-red-400 hover:bg-red-500 text-white px-4 py-2 sm:px-6 sm:py-3 rounded-lg shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-300 focus:ring-offset-2 flex items-center justify-center space-x-2"
           >
-            <Eraser size={20} />
+            <Eraser size={18} />
             <span>Clear</span>
+          </button>
+          {/* NEW LOCATION FOR EXPORT BUTTONS */}
+          <button
+            onClick={handleExportPng}
+            className="flex-1 min-w-[100px] sm:min-w-[120px] px-4 py-2 sm:px-6 sm:py-3 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors duration-200 font-semibold flex items-center justify-center space-x-2"
+          >
+            <Image size={18} />
+            <span>Export PNG</span>
+          </button>
+          <button
+            onClick={handleExportSvg}
+            className="flex-1 min-w-[100px] sm:min-w-[120px] px-4 py-2 sm:px-6 sm:py-3 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors duration-200 font-semibold flex items-center justify-center space-x-2"
+          >
+            <Download size={18} />
+            <span>Export SVG</span>
           </button>
         </div>
         {appMessage && (
-          <div className="mt-4 p-3 bg-blue-100 border border-blue-400 text-blue-700 rounded-lg">
+          <div className="mt-4 p-3 bg-blue-100 border border-blue-400 text-blue-700 rounded-lg text-sm sm:text-base">
             {appMessage}
           </div>
         )}
       </div>
 
-      <div className="w-full max-w-4xl flex flex-col lg:flex-row gap-6 h-[600px]">
-        {/* Toolbar */}
-        <div className="lg:w-1/5 bg-white rounded-xl shadow-lg p-4 flex flex-col items-start space-y-3">
-          <h2 className="text-xl font-semibold text-gray-800 mb-2">Tools</h2>
-          {/* Select Tool */}
-          <button
-            onClick={() => setActiveTool(TOOL_TYPE.SELECT)}
-            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
-              ${activeTool === TOOL_TYPE.SELECT ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-          >
-            <MousePointer2 size={20} />
-            <span>Select</span>
-          </button>
+      {/* Main Content Area: flex-col for mobile, lg:flex-row for desktop */}
+      {/* min-h-[400px] for mobile, lg:h-[600px] for desktop */}
+      <div className="w-full max-w-full sm:max-w-4xl flex flex-col lg:flex-row gap-4 sm:gap-6 min-h-[400px] lg:h-[600px]">
+        {/* Toolbar: w-full on mobile, lg:w-1/4 on desktop. Flex-col for desktop stacking */}
+        <div className="w-full lg:w-1/4 bg-white rounded-xl shadow-lg p-4 flex flex-col items-start">
+          <h2 className="text-lg sm:text-xl font-semibold text-gray-800 mb-2">Tools</h2>
+          
+          {/* Drawing Tools Group */}
+          <h3 className="text-base sm:text-lg font-semibold text-gray-700 mb-1 w-full">Draw</h3>
+          {/* Mobile: flex-wrap, Desktop: flex-col */}
+          <div className="flex flex-wrap lg:flex-col justify-start gap-2 w-full mb-2"> 
+            {/* Select Tool is now part of "Draw" for simpler grouping on mobile */}
+            <button
+              onClick={() => setActiveTool(TOOL_TYPE.SELECT)}
+              className={`w-full px-3 py-2 rounded-lg font-semibold text-sm sm:text-base transition-colors duration-200 flex items-center justify-center space-x-2
+                ${activeTool === TOOL_TYPE.SELECT ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+            >
+              <MousePointer2 size={16} />
+              <span>Select</span>
+            </button>
+            <button
+              onClick={() => setActiveTool(TOOL_TYPE.RECTANGLE)}
+              className={`w-full px-3 py-2 rounded-lg font-semibold text-sm sm:text-base transition-colors duration-200 flex items-center justify-center space-x-2
+                ${activeTool === TOOL_TYPE.RECTANGLE ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+            >
+              <Square size={16} />
+              <span>Rectangle</span>
+            </button>
+            <button
+              onClick={() => setActiveTool(TOOL_TYPE.OVAL)}
+              className={`w-full px-3 py-2 rounded-lg font-semibold text-sm sm:text-base transition-colors duration-200 flex items-center justify-center space-x-2
+                ${activeTool === TOOL_TYPE.OVAL ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+            >
+              <Circle size={16} />
+              <span>Oval</span>
+            </button>
+            <button
+              onClick={() => setActiveTool(TOOL_TYPE.DIAMOND)}
+              className={`w-full px-3 py-2 rounded-lg font-semibold text-sm sm:text-base transition-colors duration-200 flex items-center justify-center space-x-2
+                ${activeTool === TOOL_TYPE.DIAMOND ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+            >
+              <Diamond size={16} />
+              <span>Diamond</span>
+            </button>
+            <button
+              onClick={() => setActiveTool(TOOL_TYPE.LINE)}
+              className={`w-full px-3 py-2 rounded-lg font-semibold text-sm sm:text-base transition-colors duration-200 flex items-center justify-center space-x-2
+                ${activeTool === TOOL_TYPE.LINE ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+            >
+              <LineChart size={16} /> {/* Using LineChart for a generic line icon */}
+              <span>Line</span>
+            </button>
+            <button
+              onClick={() => setActiveTool(TOOL_TYPE.TEXT)}
+              className={`w-full px-3 py-2 rounded-lg font-semibold text-sm sm:text-base transition-colors duration-200 flex items-center justify-center space-x-2
+                ${activeTool === TOOL_TYPE.TEXT ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+            >
+              <Type size={16} />
+              <span>Text</span>
+            </button>
+          </div> {/* End of responsive button container for Drawing Tools */}
           <div className="w-full border-t border-gray-200 my-2"></div> {/* Separator */}
 
-          {/* Drawing Tools */}
-          <h3 className="text-lg font-semibold text-gray-700 mb-1">Draw</h3>
-          <button
-            onClick={() => setActiveTool(TOOL_TYPE.RECTANGLE)}
-            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
-              ${activeTool === TOOL_TYPE.RECTANGLE ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-          >
-            <Square size={20} />
-            <span>Rectangle</span>
-          </button>
-          <button
-            onClick={() => setActiveTool(TOOL_TYPE.OVAL)}
-            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
-              ${activeTool === TOOL_TYPE.OVAL ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-          >
-            <Circle size={20} />
-            <span>Oval</span>
-          </button>
-          <button
-            onClick={() => setActiveTool(TOOL_TYPE.DIAMOND)}
-            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
-              ${activeTool === TOOL_TYPE.DIAMOND ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-          >
-            <Diamond size={20} />
-            <span>Diamond</span>
-          </button>
-          <button
-            onClick={() => setActiveTool(TOOL_TYPE.LINE)}
-            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
-              ${activeTool === TOOL_TYPE.LINE ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-          >
-            <LineChart size={20} /> {/* Using LineChart for a generic line icon */}
-            <span>Line</span>
-          </button>
-          <button
-            onClick={() => setActiveTool(TOOL_TYPE.TEXT)}
-            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
-              ${activeTool === TOOL_TYPE.TEXT ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-          >
-            <Type size={20} />
-            <span>Text</span>
-          </button>
-          <div className="w-full border-t border-gray-200 my-2"></div> {/* Separator */}
-
-          {/* Action Tools */}
-          <h3 className="text-lg font-semibold text-gray-700 mb-1">Actions</h3>
-          <button
-            onClick={handleDeleteElement}
-            disabled={!selectedElementId && selectedElementsIds.length === 0}
-            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
-              ${(!selectedElementId && selectedElementsIds.length === 0) ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-100 text-red-700 hover:bg-red-200'}`}
-          >
-            <Trash2 size={20} />
-            <span>Delete</span>
-          </button>
-          <button
-            onClick={handleCopy}
-            disabled={!selectedElementId && selectedElementsIds.length === 0}
-            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
-              ${(!selectedElementId && selectedElementsIds.length === 0) ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
-          >
-            <Copy size={20} />
-            <span>Copy</span>
-          </button>
-          <button
-            onClick={handlePaste}
-            disabled={copiedElements.length === 0}
-            className={`w-full px-4 py-2 rounded-lg font-semibold transition-colors duration-200 flex items-center justify-center space-x-2
-              ${copiedElements.length === 0 ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
-          >
-            <ClipboardPaste size={20} />
-            <span>Paste</span>
-          </button>
-          <div className="w-full border-t border-gray-200 my-2"></div> {/* Separator */}
-
-          {/* Export Tools */}
-          <h3 className="text-lg font-semibold text-gray-700 mb-1">Export</h3>
-          <button
-            onClick={handleExportPng}
-            className="w-full px-4 py-2 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors duration-200 font-semibold flex items-center justify-center space-x-2"
-          >
-            <Image size={20} />
-            <span>Export PNG</span>
-          </button>
-          <button
-            onClick={handleExportSvg}
-            className="w-full px-4 py-2 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors duration-200 font-semibold flex items-center justify-center space-x-2"
-          >
-            <Download size={20} />
-            <span>Export SVG</span>
-          </button>
+          {/* Action Tools Group */}
+          <h3 className="text-base sm:text-lg font-semibold text-gray-700 mb-1 w-full">Actions</h3>
+          {/* Mobile: flex-wrap, Desktop: flex-col */}
+          <div className="flex flex-wrap lg:flex-col justify-start gap-2 w-full mb-2"> 
+            <button
+              onClick={handleDeleteElement}
+              disabled={!selectedElementId && selectedElementsIds.length === 0}
+              className={`w-full px-3 py-2 rounded-lg font-semibold text-sm sm:text-base transition-colors duration-200 flex items-center justify-center space-x-2
+                ${(!selectedElementId && selectedElementsIds.length === 0) ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-red-100 text-red-700 hover:bg-red-200'}`}
+            >
+              <Trash2 size={16} />
+              <span>Delete</span>
+            </button>
+            <button
+              onClick={handleCopy}
+              disabled={!selectedElementId && selectedElementsIds.length === 0}
+              className={`w-full px-3 py-2 rounded-lg font-semibold text-sm sm:text-base transition-colors duration-200 flex items-center justify-center space-x-2
+                ${(!selectedElementId && selectedElementsIds.length === 0) ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
+            >
+              <Copy size={16} />
+              <span>Copy</span>
+            </button>
+            <button
+              onClick={handlePaste}
+              disabled={copiedElements.length === 0}
+              className={`w-full px-3 py-2 rounded-lg font-semibold text-sm sm:text-base transition-colors duration-200 flex items-center justify-center space-x-2
+                ${copiedElements.length === 0 ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
+            >
+              <ClipboardPaste size={16} />
+              <span>Paste</span>
+            </button>
+          </div> {/* End of responsive button container for Action Tools */}
         </div>
 
-        {/* Canvas Area */}
-        <div className="lg:w-3/5 bg-white rounded-xl shadow-lg flex items-center justify-center overflow-hidden relative h-full">
+        {/* Canvas Area: w-full on mobile, lg:w-3/5 on desktop. flex-grow to take available height */}
+        <div className="w-full lg:w-3/5 bg-white rounded-xl shadow-lg flex items-center justify-center overflow-hidden relative flex-grow min-h-[300px] lg:min-h-0">
           {isLoadingAI && (
             <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-80 z-10 rounded-xl">
               <div className="flex flex-col items-center text-blue-600">
-                <LoadingSpinner className="h-12 w-12 mb-3" />
-                <p className="text-lg font-semibold">Generating your diagram...</p>
+                <LoadingSpinner className="h-10 w-10 sm:h-12 sm:w-12 mb-2 sm:mb-3" />
+                <p className="text-base sm:text-lg font-semibold">Generating your diagram...</p>
               </div>
             </div>
           )}
@@ -841,25 +903,28 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
             onAddElement={handleAddElement}
             onElementsSelect={handleElementsSelect}
             activeTool={activeTool}
+            initialOffsetX={canvasInitialOffsetX}
+            initialOffsetY={canvasInitialOffsetY}
+            initialScale={canvasInitialScale}
           />
         </div>
 
-        {/* Properties Panel */}
+        {/* Properties Panel: w-full on mobile, lg:w-1/5 on desktop. Only show if an element is selected */}
         {showPropertiesPanel && (
           <PropertiesPanel
             selectedElementProps={selectedElementProps}
             onPropertyChange={handlePropertyChange}
-            className="lg:w-1/5"
+            className="w-full lg:w-1/5"
           />
         )}
       </div>
 
-      {/* New: AI Refinement Section */}
-      <div className="w-full max-w-4xl bg-white rounded-xl shadow-lg p-6 mt-6">
-        <h2 className="text-xl font-semibold text-gray-800 mb-3">AI Refinement (Selected Element)</h2>
-        <p className="text-gray-600 mb-3">Select an element on the canvas, then describe how you want to refine it (e.g., "change to a diamond shape", "make text red", "add label 'Error'").</p>
+      {/* AI Refinement Section: max-w-full on mobile, max-w-4xl on larger screens */}
+      <div className="w-full max-w-full sm:max-w-4xl bg-white rounded-xl shadow-lg p-4 sm:p-6 mt-6">
+        <h2 className="text-lg sm:text-xl font-semibold text-gray-800 mb-3">AI Refinement (Selected Element)</h2>
+        <p className="text-gray-600 text-sm sm:text-base mb-3">Select an element on the canvas, then describe how you want to refine it (e.g., "change to a diamond shape", "make text red", "add label 'Error'").</p>
         <textarea
-          className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 resize-y min-h-[60px] text-gray-700"
+          className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 resize-y min-h-[60px] text-gray-700 text-sm sm:text-base"
           placeholder="e.g., 'change this rectangle to an oval and make it green'"
           value={aiRefinePrompt}
           onChange={(e) => setAiRefinePrompt(e.target.value)}
@@ -869,26 +934,26 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
         <button
           onClick={handleRefineElementWithAI}
           disabled={(!selectedElementId && selectedElementsIds.length === 0) || !aiRefinePrompt.trim() || isLoadingRefineAI}
-          className={`mt-3 w-full px-6 py-3 rounded-lg text-white font-semibold shadow-md transition-all duration-300 flex items-center justify-center space-x-2
+          className={`mt-3 w-full px-4 py-2 sm:px-6 sm:py-3 rounded-lg text-white font-semibold shadow-md transition-all duration-300 flex items-center justify-center space-x-2 text-sm sm:text-base
             ${(!selectedElementId && selectedElementsIds.length === 0) || !aiRefinePrompt.trim() || isLoadingRefineAI
               ? 'bg-purple-400 cursor-not-allowed'
               : 'bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2'}`}
         >
           {isLoadingRefineAI ? (
             <span className="flex items-center justify-center">
-              <LoadingSpinner className="-ml-1 mr-3 h-5 w-5 text-white" />
+              <LoadingSpinner className="-ml-1 mr-2 sm:mr-3 h-4 w-4 sm:h-5 sm:w-5 text-white" />
               Refining...
             </span>
           ) : (
             <>
-              <Sparkles size={20} />
+              <Sparkles size={16} />
               <span>Refine Selected with AI</span>
             </>
           )}
         </button>
       </div>
 
-      <p className="mt-4 text-gray-500 text-sm">
+      <p className="mt-4 text-gray-500 text-xs sm:text-sm">
         Current User ID: {user ? user.uid : 'Not available'} (for Firebase storage)
       </p>
 
@@ -900,10 +965,9 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
         onClose={() => setShowModal(false)}
         onConfirm={modalContent.onConfirm}
         showConfirmButton={modalContent.showConfirm}
-        showInput={modalContent.showInput}
-        inputValue={modalContent.inputValue}
+        showInput={modalContent.inputValue}
         confirmText={modalContent.confirmText}
-        zIndex={modalContent.zIndex || 50} 
+        zIndex={modalContent.zIndex || 50}
       />
 
       {/* Diagram List Modal */}
