@@ -2,8 +2,8 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
 
 // Import FirebaseService functions
-// FIX: Ensure all necessary FirebaseService functions are imported
-import { initFirebase, getAuthInstance, loginUser, signupUser, signInAnonymouslyUser, logoutUser, saveDiagram, loadDiagram } from './services/FirebaseService';
+// FIX: Import new listDiagrams and deleteDiagram functions
+import { initFirebase, getAuthInstance, loginUser, signupUser, signInAnonymouslyUser, logoutUser, saveDiagram, loadDiagram, listDiagrams, deleteDiagram } from './services/FirebaseService';
 // Import GeminiAIService
 import { geminiService } from './services/GeminiAIService';
 
@@ -97,7 +97,7 @@ const App = () => {
     setAuthError('');
     try {
       await logoutUser();
-      // Auth state change listener will automatically update `user` to null
+      // Auth state change change listener will automatically update `user` to null
       setCurrentPage('landing'); // Explicitly go back to landing after logout
     } catch (error) {
       setAuthError(error.message || 'Logout failed.');
@@ -136,8 +136,8 @@ const App = () => {
             user={user}
             onLogout={handleLogout}
             geminiService={geminiService}
-            // FIX: Pass saveDiagram and loadDiagram functions from FirebaseService
-            firebaseService={{ saveDiagram, loadDiagram }} 
+            // FIX: Pass all relevant FirebaseService functions
+            firebaseService={{ saveDiagram, loadDiagram, listDiagrams, deleteDiagram }} 
           />
         );
       default:

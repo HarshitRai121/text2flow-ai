@@ -4,6 +4,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import Canvas from '../components/Canvas';
 import Modal from '../components/Modal';
 import PropertiesPanel from '../components/PropertiesPanel';
+import DiagramListModal from '../components/DiagramListModal';
 import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants';
 import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager';
 import { elementsToSvgString } from '../utils/exportUtils';
@@ -37,9 +38,15 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
   // Ref for the canvas element in DiagramApp (needed for PNG export)
   const canvasRef = useRef(null);
 
-  // Modal state
+  // Modal state for general confirmations/alerts
   const [showModal, setShowModal] = useState(false);
   const [modalContent, setModalContent] = useState({ title: '', message: '', showConfirm: false, confirmText: '', onConfirm: null });
+
+  // New states for DiagramListModal
+  const [showDiagramListModal, setShowDiagramListModal] = useState(false);
+  const [savedDiagrams, setSavedDiagrams] = useState([]);
+  const [loadingDiagrams, setLoadingDiagrams] = useState(false);
+  const [diagramListError, setDiagramListError] = useState('');
 
   // --- History Management ---
   const isInitialRender = useRef(true);
@@ -218,11 +225,11 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
   const handleAddElement = useCallback((newElement) => {
     setDiagramElements(prevElements => {
       const updatedElements = [...prevElements, newElement];
-      pushState(updatedElements); // Push state immediately after adding
+      pushState(updatedElements);
       return updatedElements;
     });
-    setSelectedElementId(newElement.id); // Select the newly added element
-    setSelectedElementsIds([]); // Clear multi-selection when adding new single element
+    setSelectedElementId(newElement.id);
+    setSelectedElementsIds([]);
   }, []);
 
 
@@ -234,16 +241,16 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
     }
     setAppMessage('');
     setIsLoadingAI(true);
-    setDiagramElements([]); // Clear previous diagram
-    setSelectedElementId(null); // Deselect any element
-    setSelectedElementsIds([]); // Clear multi-selection
-    clearHistory(); // Clear history for new diagram
-    setActiveTool(TOOL_TYPE.SELECT); // Reset tool after generation
+    setDiagramElements([]);
+    setSelectedElementId(null);
+    setSelectedElementsIds([]);
+    clearHistory();
+    setActiveTool(TOOL_TYPE.SELECT);
 
     try {
       const newElements = await geminiService.generateDiagramFromPrompt(aiPrompt);
       setDiagramElements(newElements);
-      pushState(newElements); // Push the generated state to history
+      pushState(newElements);
       setAppMessage('Diagram generated successfully!');
     } catch (error) {
       setAppMessage(`Error: ${error.message}`);
@@ -308,25 +315,62 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
   };
 
 
-  // --- Save/Load Handlers ---
-  const handleSaveDiagram = async () => {
+  // --- Save/Load/List/Delete Diagram Handlers ---
+
+  const handleSaveDiagramPrompt = () => {
+    setModalContent({
+      title: 'Save Diagram',
+      message: 'Enter a name for your diagram:',
+      showConfirm: true,
+      confirmText: 'Save',
+      onConfirm: (name) => {
+        if (name && name.trim() !== '') {
+          handleSaveDiagram(name.trim());
+        } else {
+          setAppMessage('Diagram name cannot be empty.');
+        }
+        setShowModal(false);
+      },
+      showInput: true,
+      inputValue: '',
+    });
+    setShowModal(true);
+  };
+
+  const handleSaveDiagram = async (diagramName) => {
     setAppMessage('');
     try {
-      await firebaseService.saveDiagram(diagramElements);
-      setAppMessage('Diagram saved successfully!');
+      await firebaseService.saveDiagram(diagramName, diagramElements);
+      setAppMessage(`Diagram "${diagramName}" saved successfully!`);
     } catch (error) {
       setAppMessage(`Error saving: ${error.message}`);
       console.error("Save error:", error);
     }
   };
 
-  const handleLoadDiagram = async () => {
-    setAppMessage('');
+  const handleOpenLoadDiagramModal = async () => {
+    setLoadingDiagrams(true);
+    setDiagramListError('');
+    setShowDiagramListModal(true);
     try {
-      const loadedData = await firebaseService.loadDiagram();
+      const diagrams = await firebaseService.listDiagrams();
+      setSavedDiagrams(diagrams);
+    } catch (error) {
+      setDiagramListError(`Failed to load diagram list: ${error.message}`);
+      console.error("List diagrams error:", error);
+    } finally {
+      setLoadingDiagrams(false);
+    }
+  };
+
+  const handleLoadDiagram = async (diagramName) => {
+    setAppMessage('');
+    setShowDiagramListModal(false);
+    try {
+      const loadedData = await firebaseService.loadDiagram(diagramName);
       setDiagramElements(loadedData);
       pushState(loadedData);
-      setAppMessage('Diagram loaded successfully!');
+      setAppMessage(`Diagram "${diagramName}" loaded successfully!`);
       setSelectedElementId(null);
       setSelectedElementsIds([]);
     } catch (error) {
@@ -334,6 +378,32 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
       console.error("Load error:", error);
     }
   };
+
+  const handleDeleteDiagram = async (diagramName) => {
+    setModalContent({
+      title: 'Delete Diagram',
+      message: `Are you sure you want to delete "${diagramName}"? This action cannot be undone.`,
+      showConfirm: true,
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setAppMessage('');
+        setShowModal(false); // Close confirmation modal
+        try {
+          await firebaseService.deleteDiagram(diagramName);
+          setAppMessage(`Diagram "${diagramName}" deleted successfully!`);
+          // Refresh the list of diagrams in the modal
+          const updatedDiagrams = await firebaseService.listDiagrams();
+          setSavedDiagrams(updatedDiagrams);
+        } catch (error) {
+          setAppMessage(`Error deleting: ${error.message}`);
+          console.error("Delete error:", error);
+        }
+      },
+      zIndex: 60, // Set a higher z-index for this confirmation modal
+    });
+    setShowModal(true);
+  };
+
 
   // --- Undo/Redo Handlers ---
   const handleUndo = () => {
@@ -597,14 +667,14 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
             )}
           </button>
           <button
-            onClick={handleSaveDiagram}
+            onClick={handleSaveDiagramPrompt}
             className="flex-1 min-w-[120px] bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 flex items-center justify-center space-x-2"
           >
             <Save size={20} />
             <span>Save</span>
           </button>
           <button
-            onClick={handleLoadDiagram}
+            onClick={handleOpenLoadDiagramModal}
             className="flex-1 min-w-[120px] bg-yellow-500 hover:bg-yellow-600 text-white px-6 py-3 rounded-lg shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-offset-2 flex items-center justify-center space-x-2"
           >
             <FolderOpen size={20} />
@@ -643,7 +713,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
         )}
       </div>
 
-      <div className="w-full max-w-4xl flex flex-col lg:flex-row gap-6 h-[600px]"> {/* Added a fixed height for the canvas container */}
+      <div className="w-full max-w-4xl flex flex-col lg:flex-row gap-6 h-[600px]">
         {/* Toolbar */}
         <div className="lg:w-1/5 bg-white rounded-xl shadow-lg p-4 flex flex-col items-start space-y-3">
           <h2 className="text-xl font-semibold text-gray-800 mb-2">Tools</h2>
@@ -752,7 +822,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
         </div>
 
         {/* Canvas Area */}
-        <div className="lg:w-3/5 bg-white rounded-xl shadow-lg flex items-center justify-center overflow-hidden relative h-full"> {/* Added h-full */}
+        <div className="lg:w-3/5 bg-white rounded-xl shadow-lg flex items-center justify-center overflow-hidden relative h-full">
           {isLoadingAI && (
             <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-80 z-10 rounded-xl">
               <div className="flex flex-col items-center text-blue-600">
@@ -822,7 +892,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
         Current User ID: {user ? user.uid : 'Not available'} (for Firebase storage)
       </p>
 
-      {/* Custom Modal for confirmations/alerts */}
+      {/* General Confirmation/Input Modal */}
       <Modal
         show={showModal}
         title={modalContent.title}
@@ -830,7 +900,21 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
         onClose={() => setShowModal(false)}
         onConfirm={modalContent.onConfirm}
         showConfirmButton={modalContent.showConfirm}
+        showInput={modalContent.showInput}
+        inputValue={modalContent.inputValue}
         confirmText={modalContent.confirmText}
+        zIndex={modalContent.zIndex || 50} 
+      />
+
+      {/* Diagram List Modal */}
+      <DiagramListModal
+        show={showDiagramListModal}
+        onClose={() => setShowDiagramListModal(false)}
+        diagrams={savedDiagrams}
+        onLoadDiagram={handleLoadDiagram}
+        onDeleteDiagram={handleDeleteDiagram}
+        loading={loadingDiagrams}
+        error={diagramListError}
       />
     </div>
   );
