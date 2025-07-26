@@ -7,7 +7,7 @@ import PropertiesPanel from '../components/PropertiesPanel';
 import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants';
 import { pushState, undo, redo, canUndo, canRedo, clearHistory } from '../utils/historyManager';
 import { elementsToSvgString } from '../utils/exportUtils';
-import { getShapeConnectionPoint } from '../services/GeminiAIService'; // Import the helper function
+import { getShapeConnectionPoint } from '../services/GeminiAIService';
 // Import Lucide icons
 import {
   Settings, Undo, Redo, Save, FolderOpen, Eraser,
@@ -17,7 +17,7 @@ import {
 
 import { geminiService } from '../services/GeminiAIService';
 
-const DiagramApp = ({ user, onLogout, firebaseService }) => {
+const DiagramApp = ({ user, onLogout, firebaseService }) => { // firebaseService is now destructured from props
   const [diagramElements, setDiagramElements] = useState([]);
   const [aiPrompt, setAiPrompt] = useState("Generate a simple flowchart with a start, a process, a decision, and two end points.");
   const [isLoadingAI, setIsLoadingAI] = useState(false);
@@ -211,7 +211,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
       }
       return updatedElements;
     });
-  }, [diagramElements]); // Dependency on diagramElements to access latest element states
+  }, [diagramElements]);
 
 
   // Handler for adding a new element (from manual drawing tools or paste)
@@ -293,15 +293,14 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
         refinedElementsData.forEach(refinedEl => {
           const index = updatedElements.findIndex(el => el.id === refinedEl.id);
           if (index !== -1) {
-            // Merge existing properties with refined properties
             updatedElements[index] = { ...updatedElements[index], ...refinedEl };
           }
         });
-        pushState(updatedElements); // Push state after refinement
+        pushState(updatedElements);
         return updatedElements;
       });
       setAppMessage('Element(s) refined successfully!');
-      setAiRefinePrompt(''); // Clear prompt after use
+      setAiRefinePrompt('');
     } catch (error) {
       setAppMessage(`Error refining: ${error.message}`);
       console.error("AI Refinement Error:", error);
@@ -315,7 +314,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
   const handleSaveDiagram = async () => {
     setAppMessage('');
     try {
-      await firebaseService.saveDiagram(diagramElements);
+      await firebaseService.saveDiagram(diagramElements); // Call saveDiagram from props
       setAppMessage('Diagram saved successfully!');
     } catch (error) {
       setAppMessage(`Error saving: ${error.message}`);
@@ -326,7 +325,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
   const handleLoadDiagram = async () => {
     setAppMessage('');
     try {
-      const loadedData = await firebaseService.loadDiagram();
+      const loadedData = await firebaseService.loadDiagram(); // Call loadDiagram from props
       setDiagramElements(loadedData);
       pushState(loadedData); // Push loaded state to history
       setAppMessage('Diagram loaded successfully!');
@@ -343,8 +342,8 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
     const prevState = undo();
     if (prevState !== null) {
       setDiagramElements(prevState);
-      setSelectedElementId(null); // Clear selection on undo/redo for simplicity
-      setSelectedElementsIds([]); // Clear multi-selection
+      setSelectedElementId(null);
+      setSelectedElementsIds([]);
       setAppMessage('Undo successful.');
     } else {
       setAppMessage('Nothing to undo.');
@@ -355,8 +354,8 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
     const nextState = redo();
     if (nextState !== null) {
       setDiagramElements(nextState);
-      setSelectedElementId(null); // Clear selection on undo/redo for simplicity
-      setSelectedElementsIds([]); // Clear multi-selection
+      setSelectedElementId(null);
+      setSelectedElementsIds([]);
       setAppMessage('Redo successful.');
     } else {
       setAppMessage('Nothing to redo.');
@@ -372,9 +371,9 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
       confirmText: 'Clear',
       onConfirm: () => {
         setDiagramElements([]);
-        clearHistory(); // Clear history when canvas is cleared
+        clearHistory();
         setSelectedElementId(null);
-        setSelectedElementsIds([]); // Clear multi-selection
+        setSelectedElementsIds([]);
         setAppMessage('Canvas cleared.');
         setShowModal(false);
       }
@@ -404,11 +403,11 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
             el.type !== 'line' || (!idsToDelete.includes(el.sourceId) && !idsToDelete.includes(el.targetId))
           );
 
-          pushState(updatedElements); // Push state after deletion
+          pushState(updatedElements);
           return updatedElements;
         });
-        setSelectedElementId(null); // Deselect after deletion
-        setSelectedElementsIds([]); // Clear multi-selection
+        setSelectedElementId(null);
+        setSelectedElementsIds([]);
         setAppMessage('Element(s) deleted.');
         setShowModal(false);
       }
@@ -427,7 +426,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
     }
 
     if (elementsToCopy.length > 0) {
-      setCopiedElements(JSON.parse(JSON.stringify(elementsToCopy))); // Deep copy to prevent reference issues
+      setCopiedElements(JSON.parse(JSON.stringify(elementsToCopy)));
       setAppMessage(`Copied ${elementsToCopy.length} element(s).`);
     } else {
       setAppMessage("No element(s) selected to copy.");
@@ -444,9 +443,8 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
     const newElements = copiedElements.map(el => {
       const newId = generateUniqueId();
       pastedNewIds.push(newId);
-      const offset = 20; // Offset for pasted elements
+      const offset = 20;
 
-      // Create a new element with new ID and offset position
       if (el.type === 'line') {
         return {
           ...el,
@@ -455,8 +453,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
           startY: el.startY + offset,
           endX: el.endX + offset,
           endY: el.endY + offset,
-          // When pasting lines, clear source/target IDs as connections are broken
-          sourceId: null,
+          sourceId: null, // Clear source/target IDs when pasting lines
           targetId: null,
         };
       } else {
@@ -471,11 +468,10 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
 
     setDiagramElements(prevElements => {
       const updatedElements = [...prevElements, ...newElements];
-      pushState(updatedElements); // Push state after pasting
+      pushState(updatedElements);
       return updatedElements;
     });
 
-    // Select the newly pasted elements
     setSelectedElementId(null);
     setSelectedElementsIds(pastedNewIds);
     setAppMessage(`Pasted ${newElements.length} element(s).`);
@@ -510,7 +506,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    URL.revokeObjectURL(url); // Clean up the URL object
+    URL.revokeObjectURL(url);
     setAppMessage('Diagram exported as SVG!');
   };
 
@@ -520,7 +516,6 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
     setDiagramElements(prevElements => {
       const updatedElements = prevElements.map(el => {
         if (el.id === selectedElementId) {
-          // Special handling for text vs. label
           if (el.type === 'text' && key === 'label') {
             return { ...el, text: value };
           } else if (el.type !== 'text' && key === 'text') {
@@ -531,8 +526,6 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
         return el;
       });
       // Trigger a re-evaluation of line positions if a connected shape's properties change
-      // This is a simplified approach; a more robust solution might involve a dedicated
-      // function to update all line coordinates based on current shape positions.
       const elementsAfterPropertyChange = updatedElements.map(el => {
         if (el.type === 'line' && (el.sourceId || el.targetId)) {
           const sourceShape = updatedElements.find(s => s.id === el.sourceId);
@@ -542,13 +535,11 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
             const { x: startX, y: startY } = getShapeConnectionPoint(sourceShape, targetShape.x + targetShape.width / 2, targetShape.y + targetShape.height / 2);
             const { x: endX, y: endY } = getShapeConnectionPoint(targetShape, sourceShape.x + sourceShape.width / 2, sourceShape.y + sourceShape.height / 2);
             return { ...el, startX, startY, endX, endY };
-          } else if (sourceShape) { // Only source connected
-            // If the source shape's position changed, update line start
+          } else if (sourceShape) {
             const newStartX = sourceShape.x + sourceShape.width / 2;
             const newStartY = sourceShape.y + sourceShape.height / 2;
             return { ...el, startX: newStartX, startY: newStartY };
-          } else if (targetShape) { // Only target connected
-            // If the target shape's position changed, update line end
+          } else if (targetShape) {
             const newEndX = targetShape.x + targetShape.width / 2;
             const newEndY = targetShape.y + targetShape.height / 2;
             return { ...el, endX: newEndX, endY: newEndY };
@@ -557,7 +548,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => {
         return el;
       });
 
-      pushState(elementsAfterPropertyChange); // Push state immediately for property changes
+      pushState(elementsAfterPropertyChange);
       return elementsAfterPropertyChange;
     });
   };

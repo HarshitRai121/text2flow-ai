@@ -1,141 +1,177 @@
 // src/services/FirebaseService.js
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInAnonymously, onAuthStateChanged, signOut, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+import { getFirestore, doc, setDoc, getDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
-let app;
-let auth;
-let db;
-let currentUserId = null; // To store the current user's ID
+let app = null;
+let auth = null;
+let db = null;
+let currentUserId = null; // Store the current user ID
 
-// Initialize Firebase app and services
-export const initFirebase = async () => {
-  // Use Canvas-provided config if available, otherwise fallback to .env for local
-//   const firebaseConfig = typeof __firebase_config !== 'undefined'
-//     ? JSON.parse(__firebase_config)
-//     : JSON.parse(process.env.REACT_APP_FIREBASE_CONFIG); // Access from .env
+// Global variables provided by the Canvas environment
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+// const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 
-  const firebaseConfig = {
+const firebaseConfig = {
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
   authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
   projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
   storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
   messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
   appId: process.env.REACT_APP_FIREBASE_APP_ID,
-  };
-
-  if (!app) { // Initialize only once
-    app = initializeApp(firebaseConfig);
-    auth = getAuth(app);
-    db = getFirestore(app);
-
-    // Listen for auth state changes and update currentUserId
-    onAuthStateChanged(auth, (user) => {
-      currentUserId = user ? user.uid : null;
-      console.log("Firebase Auth State Changed. User ID:", currentUserId);
-    });
-
-    // Handle initial auth token from Canvas or anonymous sign-in
-    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-      try {
-        await signInWithCustomToken(auth, __initial_auth_token);
-        console.log("Signed in with custom token.");
-      } catch (error) {
-        console.error("Error signing in with custom token, falling back to anonymous:", error);
-        await signInAnonymously(auth);
-      }
-    } else {
-      // If no custom token (e.g., local dev without specific token), sign in anonymously
-      await signInAnonymously(auth);
-      console.log("Signed in anonymously.");
-    }
-  }
 };
 
-// Getters for Firebase instances and current user ID
-export const getCurrentUserId = () => currentUserId;
-export const getAuthInstance = () => auth;
-export const getFirestoreInstance = () => db;
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-// Authentication functions
+export const initFirebase = async () => {
+    if (app) {
+        console.log("Firebase already initialized.");
+        return;
+    }
+
+    try {
+        app = initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
+
+        // Set up auth state change listener
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                currentUserId = user.uid;
+                console.log("Firebase Auth State Changed. User ID:", currentUserId);
+            } else {
+                currentUserId = null;
+                console.log("Firebase Auth State Changed. No user signed in.");
+            }
+        });
+
+        // Sign in using custom token or anonymously
+        if (initialAuthToken) {
+            await signInWithCustomToken(auth, initialAuthToken);
+            console.log("Signed in with custom token.");
+        } else {
+            await signInAnonymously(auth);
+            console.log("Signed in anonymously.");
+        }
+
+    } catch (error) {
+        console.error("Error initializing Firebase:", error);
+        throw new Error(`Firebase initialization failed: ${error.message}`);
+    }
+};
+
+export const getAuthInstance = () => {
+    if (!auth) {
+        console.error("Auth not initialized. Call initFirebase first.");
+        throw new Error("Auth not initialized.");
+    }
+    return auth;
+};
+
+export const getFirestoreInstance = () => {
+    if (!db) {
+        console.error("Firestore not initialized. Call initFirebase first.");
+        throw new Error("Firestore not initialized.");
+    }
+    return db;
+};
+
 export const loginUser = async (email, password) => {
-  try {
-    await signInWithEmailAndPassword(auth, email, password);
-    console.log("User logged in successfully!");
-  } catch (error) {
-    console.error("Login Error:", error);
-    throw error; // Re-throw to be caught by UI
-  }
+    try {
+        // Firebase Auth functions handle user state internally
+        // No need to explicitly set user here, onAuthStateChanged will handle it
+        await auth.signInWithEmailAndPassword(email, password);
+        console.log("User logged in successfully.");
+    } catch (error) {
+        console.error("Login error:", error);
+        throw new Error(error.message);
+    }
 };
 
 export const signupUser = async (email, password) => {
-  try {
-    await createUserWithEmailAndPassword(auth, email, password);
-    console.log("User signed up successfully!");
-  } catch (error) {
-    console.error("Signup Error:", error);
-    throw error; // Re-throw to be caught by UI
-  }
+    try {
+        await auth.createUserWithEmailAndPassword(email, password);
+        console.log("User signed up successfully.");
+    } catch (error) {
+        console.error("Signup error:", error);
+        throw new Error(error.message);
+    }
 };
 
 export const signInAnonymouslyUser = async () => {
-  try {
-    await signInAnonymously(auth);
-    console.log("Signed in anonymously.");
-  } catch (error) {
-    console.error("Anonymous Sign-in Error:", error);
-    throw error;
-  }
+    try {
+        await signInAnonymously(auth);
+        console.log("Signed in anonymously.");
+    } catch (error) {
+        console.error("Anonymous sign-in error:", error);
+        throw new Error(error.message);
+    }
 };
 
 export const logoutUser = async () => {
-  try {
-    await signOut(auth);
-    console.log("User logged out.");
-  } catch (error) {
-    console.error("Logout Error:", error);
-    throw error;
-  }
+    try {
+        await signOut(auth);
+        console.log("User logged out successfully.");
+    } catch (error) {
+        console.error("Logout error:", error);
+        throw new Error(error.message);
+    }
 };
 
-// Firestore functions for saving/loading diagrams
-export const saveDiagram = async (diagramData) => {
-  if (!currentUserId) {
-    throw new Error("User not authenticated to save diagram.");
-  }
-  // __app_id is provided by the Canvas environment at runtime.
-  // For local development, we use a default 'default-app-id'.
-  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-  const diagramRef = doc(db, `artifacts/${appId}/users/${currentUserId}/diagrams/my_diagram_id`);
-  try {
-    // Firestore has limitations on deeply nested arrays or complex objects.
-    // Stringify the diagramData to ensure it's stored as a single string.
-    await setDoc(diagramRef, { data: JSON.stringify(diagramData), lastUpdated: new Date().toISOString() });
-    console.log("Diagram saved successfully for user:", currentUserId);
-  } catch (error) {
-    console.error("Error saving diagram:", error);
-    throw error;
-  }
+// --- Firestore Operations ---
+
+// Helper to get the document reference for the current user's diagram
+const getDiagramDocRef = () => {
+    if (!currentUserId) {
+        throw new Error("User not authenticated. Cannot save/load diagram.");
+    }
+    // Store in /artifacts/{appId}/users/{userId}/diagrams/myDiagram
+    return doc(db, `artifacts/${appId}/users/${currentUserId}/diagrams/myDiagram`);
+};
+
+export const saveDiagram = async (diagramElements) => {
+    if (!db || !currentUserId) {
+        await initFirebase(); // Ensure Firebase is initialized and user is authenticated
+        if (!currentUserId) {
+            throw new Error("Firebase not ready or user not authenticated for saving.");
+        }
+    }
+
+    try {
+        const diagramData = {
+            elements: JSON.stringify(diagramElements), // Stringify to handle complex objects/arrays within elements
+            lastSaved: new Date().toISOString(),
+            userId: currentUserId,
+        };
+        await setDoc(getDiagramDocRef(), diagramData);
+        console.log("Diagram saved successfully for user:", currentUserId);
+    } catch (error) {
+        console.error("Error saving diagram:", error);
+        throw new Error(`Failed to save diagram: ${error.message}`);
+    }
 };
 
 export const loadDiagram = async () => {
-  if (!currentUserId) {
-    throw new Error("User not authenticated to load diagram.");
-  }
-  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-  const diagramRef = doc(db, `artifacts/${appId}/users/${currentUserId}/diagrams/my_diagram_id`);
-  try {
-    const docSnap = await getDoc(diagramRef);
-    if (docSnap.exists()) {
-      console.log("Diagram loaded successfully for user:", currentUserId);
-      // Parse the stringified data back into an object
-      return JSON.parse(docSnap.data().data);
-    } else {
-      console.log("No diagram found for user:", currentUserId);
-      return []; // Return empty array if no diagram exists
+    if (!db || !currentUserId) {
+        await initFirebase(); // Ensure Firebase is initialized and user is authenticated
+        if (!currentUserId) {
+            throw new Error("Firebase not ready or user not authenticated for loading.");
+        }
     }
-  } catch (error) {
-    console.error("Error loading diagram:", error);
-    throw error;
-  }
+
+    try {
+        const docSnap = await getDoc(getDiagramDocRef());
+        if (docSnap.exists()) {
+            const data = docSnap.data();
+            const loadedElements = JSON.parse(data.elements); // Parse the stringified elements
+            console.log("Diagram loaded successfully for user:", currentUserId);
+            return loadedElements;
+        } else {
+            console.log("No diagram found for user:", currentUserId);
+            return []; // Return empty array if no diagram exists
+        }
+    } catch (error) {
+        console.error("Error loading diagram:", error);
+        throw new Error(`Failed to load diagram: ${error.message}`);
+    }
 };

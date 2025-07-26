@@ -2,9 +2,9 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
 
 // Import FirebaseService functions
+// FIX: Ensure all necessary FirebaseService functions are imported
 import { initFirebase, getAuthInstance, loginUser, signupUser, signInAnonymouslyUser, logoutUser, saveDiagram, loadDiagram } from './services/FirebaseService';
-// Import GeminiAIService (our mock for now)
-// FIX: Corrected import to match the named export 'geminiService'
+// Import GeminiAIService
 import { geminiService } from './services/GeminiAIService';
 
 // Import page components
@@ -135,8 +135,9 @@ const App = () => {
           <DiagramApp
             user={user}
             onLogout={handleLogout}
-            geminiService={geminiService} // Pass the correctly imported instance
-            firebaseService={{ saveDiagram, loadDiagram }} // Pass specific functions
+            geminiService={geminiService}
+            // FIX: Pass saveDiagram and loadDiagram functions from FirebaseService
+            firebaseService={{ saveDiagram, loadDiagram }} 
           />
         );
       default:
