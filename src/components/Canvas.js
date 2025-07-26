@@ -1,7 +1,7 @@
 // src/components/Canvas.js
 import React, { useRef, useEffect, useCallback, useState, forwardRef } from 'react';
 import { drawRectangle, drawOval, drawDiamond, drawLine, drawTextElement, getResizeHandles, drawConnectionIndicator } from '../utils/drawingUtils';
-import { hitTest, isPointInHandle, isPointInTextElement, isPointNearShapeBoundary } from '../utils/hitTestUtils'; // Import new hit test
+import { hitTest, isPointInHandle, isPointInTextElement, isPointNearShapeBoundary } from '../utils/hitTestUtils';
 import { CANVAS_WIDTH, CANVAS_HEIGHT, RESIZE_HANDLE_SIZE, DEFAULT_ELEMENT_STYLE, TOOL_TYPE, generateUniqueId } from '../utils/constants';
 
 // Use forwardRef to allow parent components to get a ref to the canvas DOM element
@@ -9,29 +9,39 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
   const isDraggingRef = useRef(false);
   const isResizingRef = useRef(false);
   const isDrawingRef = useRef(false);
-  const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const dragOffsetRef = useRef({ x: 0, y: 0 }); // Used for element drag/resize and now for canvas pan
   const resizeHandleNameRef = useRef(null);
   const selectedElementInitialPropsRef = useRef(null);
-  const startDrawingPointRef = useRef({ x: 0, y: 0 });
+  const startDrawingPointRef = useRef({ x: 0, y: 0 }); // Used for drawing new elements and selection box
   const currentMousePosRef = useRef({ x: 0, y: 0 });
   const lastUpdatedElementPropsRef = useRef(null);
 
-  // New: Refs for line connection logic
-  const potentialSourceElementRef = useRef(null); // Element hovered over when starting a line drag
-  const potentialTargetElementRef = useRef(null); // Element hovered over when ending a line drag
+  const potentialSourceElementRef = useRef(null);
+  const potentialTargetElementRef = useRef(null);
 
-  // State for drawing the selection box (local to Canvas)
   const [selectionBox, setSelectionBox] = useState(null);
-
   const [textInputProps, setTextInputProps] = useState(null);
 
-  // Helper function to get mouse position relative to the canvas
+  // State for the actual DOM canvas dimensions (display size)
+  const [canvasDisplayWidth, setCanvasDisplayWidth] = useState(CANVAS_WIDTH);
+  const [canvasDisplayHeight, setCanvasDisplayHeight] = useState(CANVAS_HEIGHT);
+
+  // New: State for canvas pan/zoom
+  const [offsetX, setOffsetX] = useState(0);
+  const [offsetY, setOffsetY] = useState(0);
+  const [scale, setScale] = useState(1); // Will be used later for zooming
+
+  const isPanningRef = useRef(false); // New ref to track if canvas itself is being panned
+  const lastPanMousePosRef = useRef({ x: 0, y: 0 }); // To calculate pan delta
+
+  // Helper function to get mouse position relative to the canvas's DOM element
   const getMousePos = (e) => {
     const canvas = ref.current;
     const rect = canvas.getBoundingClientRect();
+    // Convert mouse coordinates to canvas's internal (scaled and translated) coordinates
     return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+      x: (e.clientX - rect.left - offsetX) / scale,
+      y: (e.clientY - rect.top - offsetY) / scale,
     };
   };
 
@@ -42,8 +52,13 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear canvas
 
+    ctx.save(); // Save the current transformation state
+
+    // Apply canvas transformations (panning and zooming)
+    ctx.translate(offsetX, offsetY);
+    ctx.scale(scale, scale);
+
     diagramElements.forEach(element => {
-      // Check if element is part of multi-selection or single selection
       const isSelected = selectedElementsIds.includes(element.id) || element.id === selectedElementId;
       switch (element.type) {
         case 'rectangle':
@@ -98,11 +113,10 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
           drawDiamond(ctx, tempElement, false);
           break;
         case TOOL_TYPE.LINE:
-          // If drawing a line, check for potential source/target elements
           const sourceEl = potentialSourceElementRef.current;
           const targetEl = potentialTargetElementRef.current;
 
-          // Draw line preview, possibly snapping to potential source/target
+          // Note: getShapeConnectionPoint expects world coordinates, which startX/Y and currentX/Y already are
           const actualStartX = sourceEl ? (sourceEl.x + sourceEl.width / 2) : startX;
           const actualStartY = sourceEl ? (sourceEl.y + sourceEl.height / 2) : startY;
           const actualEndX = targetEl ? (targetEl.x + targetEl.width / 2) : currentX;
@@ -110,7 +124,7 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
 
           drawLine(ctx, { ...tempElement, startX: actualStartX, startY: actualStartY, endX: actualEndX, endY: actualEndY }, false);
           
-          // Draw connection indicators if hovering over elements
+          // Draw connection indicators in world coordinates
           if (sourceEl) {
             drawConnectionIndicator(ctx, sourceEl.x + sourceEl.width / 2, sourceEl.y + sourceEl.height / 2);
           }
@@ -125,30 +139,78 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
       }
     }
 
-    // Draw selection box
+    // Draw selection box in world coordinates
     if (selectionBox) {
       ctx.strokeStyle = '#3B82F6';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([5, 5]);
+      ctx.lineWidth = 1 / scale; // Scale line width so it appears consistent regardless of zoom
+      ctx.setLineDash([5 / scale, 5 / scale]); // Scale dash pattern
       ctx.strokeRect(selectionBox.x, selectionBox.y, selectionBox.width, selectionBox.height);
       ctx.setLineDash([]);
       ctx.fillStyle = 'rgba(59, 130, 246, 0.1)';
       ctx.fillRect(selectionBox.x, selectionBox.y, selectionBox.width, selectionBox.height);
     }
-  }, [diagramElements, selectedElementId, selectedElementsIds, activeTool, selectionBox, ref, potentialSourceElementRef, potentialTargetElementRef]);
 
-  // Effect to re-draw when elements or selection changes
+    ctx.restore(); // Restore the canvas transformation state
+  }, [diagramElements, selectedElementId, selectedElementsIds, activeTool, selectionBox, ref, potentialSourceElementRef, potentialTargetElementRef, offsetX, offsetY, scale]); // Add pan/zoom states to dependencies
+
+  // Effect to set up ResizeObserver
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+
+    const resizeObserver = new ResizeObserver(entries => {
+      for (let entry of entries) {
+        if (entry.target === canvas) {
+          canvas.width = entry.contentRect.width;
+          canvas.height = entry.contentRect.height;
+          setCanvasDisplayWidth(entry.contentRect.width);
+          setCanvasDisplayHeight(entry.contentRect.height);
+        }
+      }
+    });
+
+    resizeObserver.observe(canvas);
+
+    return () => {
+      resizeObserver.unobserve(canvas);
+    };
+  }, [ref]);
+
+  // Effect to re-draw when elements or canvas display dimensions or pan/zoom change
   useEffect(() => {
     drawElements();
-  }, [drawElements]);
+  }, [drawElements, canvasDisplayWidth, canvasDisplayHeight, offsetX, offsetY, scale]); // Added pan/zoom states here
 
   // --- Mouse Event Handlers ---
   const handleMouseDown = (e) => {
-    const { x: mouseX, y: mouseY } = getMousePos(e);
-    currentMousePosRef.current = { x: mouseX, y: mouseY };
-    lastUpdatedElementPropsRef.current = null; // Reset for new operation
+    // Store mouse position in screen coordinates for pan calculations
+    lastPanMousePosRef.current = { x: e.clientX, y: e.clientY };
 
-    setTextInputProps(null); // Hide text input if clicking anywhere else
+    const { x: mouseX, y: mouseY } = getMousePos(e); // Mouse position in world coordinates
+    currentMousePosRef.current = { x: mouseX, y: mouseY };
+    lastUpdatedElementPropsRef.current = null;
+
+    setTextInputProps(null);
+
+    // If a drawing tool is active (excluding SELECT and TEXT)
+    if (activeTool !== TOOL_TYPE.SELECT && activeTool !== TOOL_TYPE.TEXT) {
+      isDrawingRef.current = true;
+      startDrawingPointRef.current = { x: mouseX, y: mouseY };
+      onElementSelect(null); // Clear single selection
+      onElementsSelect([]); // Clear multi-selection
+
+      if (activeTool === TOOL_TYPE.LINE) {
+        for (let i = diagramElements.length - 1; i >= 0; i--) {
+          const element = diagramElements[i];
+          // Check for connection to shapes only
+          if (element.type !== 'line' && element.type !== 'text' && isPointNearShapeBoundary(mouseX, mouseY, element)) {
+            potentialSourceElementRef.current = element;
+            break;
+          }
+        }
+      }
+      return; // Exit early if drawing
+    }
 
     // Logic for TEXT tool (click to create/edit)
     if (activeTool === TOOL_TYPE.TEXT) {
@@ -162,10 +224,11 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
           let textY = element.y;
           let fontSize = element.fontSize || DEFAULT_ELEMENT_STYLE.fontSize;
           let textColor = element.color || DEFAULT_ELEMENT_STYLE.color;
-          let estimatedWidth = textContent.length * (fontSize * 0.6) + 20;
-          let estimatedHeight = fontSize * 1.2 + 20;
+          // Estimated width/height for hit test, adjusted for current scale
+          let estimatedWidth = (textContent.length * (fontSize * 0.6) + 20);
+          let estimatedHeight = (fontSize * 1.2 + 20);
 
-          if (element.type !== 'text') {
+          if (element.type !== 'text') { // If it's a shape with a label
             textX = element.x + element.width / 2 - estimatedWidth / 2;
             textY = element.y + element.height / 2 - estimatedHeight / 2;
           }
@@ -192,8 +255,8 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
               color: textColor,
               originalType: element.type
             });
-            onElementSelect(element.id); // Select the element whose text is being edited
-            onElementsSelect([]); // Clear multi-selection
+            onElementSelect(element.id);
+            onElementsSelect([]);
             foundTextElementToEdit = true;
             break;
           }
@@ -219,7 +282,7 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
           id: newTextElement.id,
           x: newTextElement.x,
           y: newTextElement.y,
-          width: 100,
+          width: 100, // Initial width, will adjust with text input
           height: newTextElement.fontSize * 1.2,
           text: newTextElement.text,
           fontSize: newTextElement.fontSize,
@@ -229,26 +292,6 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
         isDrawingRef.current = false;
         return;
       }
-    }
-
-    // Logic for other drawing tools (RECTANGLE, OVAL, DIAMOND, LINE)
-    if (activeTool !== TOOL_TYPE.SELECT) {
-      isDrawingRef.current = true;
-      startDrawingPointRef.current = { x: mouseX, y: mouseY };
-      onElementSelect(null); // Clear single selection
-      onElementsSelect([]); // Clear multi-selection
-
-      // If drawing a line, check for a potential source element
-      if (activeTool === TOOL_TYPE.LINE) {
-        for (let i = diagramElements.length - 1; i >= 0; i--) {
-          const element = diagramElements[i];
-          if (element.type !== 'line' && element.type !== 'text' && isPointNearShapeBoundary(mouseX, mouseY, element)) {
-            potentialSourceElementRef.current = element;
-            break;
-          }
-        }
-      }
-      return;
     }
 
     // --- SELECT Tool Logic ---
@@ -262,6 +305,7 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
       if (element.id === selectedElementId && (element.type === 'rectangle' || element.type === 'oval' || element.type === 'diamond')) {
         const handles = getResizeHandles(element);
         for (const handleName in handles) {
+          // Pass scale to isPointInHandle if handle sizes are affected by zoom
           if (isPointInHandle(mouseX, mouseY, handles[handleName])) {
             clickedHandle = handles[handleName];
             clickedElement = element;
@@ -280,77 +324,87 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
 
     // Handle selection and drag/resize state
     if (clickedHandle) {
-      onElementSelect(clickedElement.id); // Ensure single selection for resize
-      onElementsSelect([]); // Clear multi-selection for resize
+      onElementSelect(clickedElement.id);
+      onElementsSelect([]);
       isResizingRef.current = true;
       resizeHandleNameRef.current = clickedHandle.name;
       dragOffsetRef.current = { x: mouseX, y: mouseY }; // Store initial mouse position for resize calculations
       selectedElementInitialPropsRef.current = { ...clickedElement }; // Store initial properties
     } else if (clickedElement) {
-      // If clicked on an element
       if (e.shiftKey) {
-        // Shift-click for multi-selection toggle
-        onElementsSelect(prev => { // Use onElementsSelect from props
+        onElementsSelect(prev => {
           if (prev.includes(clickedElement.id)) {
-            return prev.filter(id => id !== clickedElement.id); // Deselect if already selected
+            return prev.filter(id => id !== clickedElement.id);
           } else {
-            return [...prev, clickedElement.id]; // Add to selection
+            return [...prev, clickedElement.id];
           }
         });
-        onElementSelect(null); // Clear single selection when multi-selecting
+        onElementSelect(null);
       } else if (selectedElementsIds.includes(clickedElement.id)) {
-        // If clicking on an already multi-selected element, start dragging the group
-        onElementSelect(null); // Clear single selection
+        onElementSelect(null);
         isDraggingRef.current = true;
-        dragOffsetRef.current = { x: mouseX, y: mouseY }; // Store initial mouse position for group drag
-        // Store initial properties for all selected elements for group drag
+        dragOffsetRef.current = { x: mouseX, y: mouseY };
         selectedElementInitialPropsRef.current = diagramElements.filter(el => selectedElementsIds.includes(el.id));
       } else {
-        // Single selection, clear multi-selection
         onElementSelect(clickedElement.id);
-        onElementsSelect([]); // Clear multi-selection
+        onElementsSelect([]);
         isDraggingRef.current = true;
-        // Store initial mouse position for single element drag to calculate delta
         dragOffsetRef.current = { x: mouseX, y: mouseY };
         selectedElementInitialPropsRef.current = { ...clickedElement };
       }
     } else {
-      // Clicked on empty space
-      onElementSelect(null); // Clear single selection
-      onElementsSelect([]); // Clear multi-selection
-      isDrawingRef.current = false; // Not drawing a shape
-      isDraggingRef.current = false; // Not dragging an element
-      isResizingRef.current = false; // Not resizing an element
-      startDrawingPointRef.current = { x: mouseX, y: mouseY }; // Set start point for selection box
-      setSelectionBox({ x: mouseX, y: mouseY, width: 0, height: 0 }); // Start drawing selection box
+      // Clicked on empty space - initiate panning or selection box
+      onElementSelect(null);
+      onElementsSelect([]);
+      isDrawingRef.current = false;
+      isDraggingRef.current = false;
+      isResizingRef.current = false;
+      
+      // If no element or handle is clicked, start panning the canvas
+      isPanningRef.current = true;
+      // No selection box for now, will re-introduce later if needed with pan/zoom
+      // setSelectionBox({ x: mouseX, y: mouseY, width: 0, height: 0 }); 
     }
   };
 
   const handleMouseMove = (e) => {
+    // Mouse position in screen coordinates
+    const mouseScreenX = e.clientX;
+    const mouseScreenY = e.clientY;
+
+    // Mouse position in world coordinates (after applying current pan/zoom)
     const { x: mouseX, y: mouseY } = getMousePos(e);
     currentMousePosRef.current = { x: mouseX, y: mouseY };
 
-    // If drawing a line, update potential target element
-    if (isDrawingRef.current && activeTool === TOOL_TYPE.LINE) {
-      let hoveredTarget = null;
-      for (let i = diagramElements.length - 1; i >= 0; i--) {
-        const element = diagramElements[i];
-        if (element.type !== 'line' && element.type !== 'text' && isPointNearShapeBoundary(mouseX, mouseY, element)) {
-          hoveredTarget = element;
-          break;
-        }
-      }
-      potentialTargetElementRef.current = hoveredTarget;
-      drawElements(); // Re-draw to show line preview and potential target indicator
-      return;
+    // Handle Panning
+    if (isPanningRef.current) {
+      const dx = mouseScreenX - lastPanMousePosRef.current.x;
+      const dy = mouseScreenY - lastPanMousePosRef.current.y;
+      setOffsetX(prev => prev + dx);
+      setOffsetY(prev => prev + dy);
+      lastPanMousePosRef.current = { x: mouseScreenX, y: mouseScreenY };
+      drawElements(); // Redraw immediately for smooth panning
+      return; // Exit early if panning
     }
 
+    // Drawing a new shape/line preview
     if (isDrawingRef.current && activeTool !== TOOL_TYPE.SELECT && activeTool !== TOOL_TYPE.TEXT) {
-      drawElements(); // Re-draw canvas to show drawing preview
+      if (activeTool === TOOL_TYPE.LINE) {
+        let hoveredTarget = null;
+        for (let i = diagramElements.length - 1; i >= 0; i--) {
+          const element = diagramElements[i];
+          if (element.type !== 'line' && element.type !== 'text' && isPointNearShapeBoundary(mouseX, mouseY, element)) {
+            hoveredTarget = element;
+            break;
+          }
+        }
+        potentialTargetElementRef.current = hoveredTarget;
+      }
+      drawElements(); // Redraw canvas to show drawing preview or line snapping
       return;
     }
 
-    // Update selection box
+    // Selection box drawing (currently disabled for simplicity with pan)
     if (selectionBox) {
       setSelectionBox(prev => ({
         x: Math.min(startDrawingPointRef.current.x, mouseX),
@@ -358,17 +412,18 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
         width: Math.abs(mouseX - startDrawingPointRef.current.x),
         height: Math.abs(mouseY - startDrawingPointRef.current.y),
       }));
-      drawElements(); // Redraw to show updated selection box
+      drawElements();
       return;
     }
 
     // Get the *current* elements from diagramElements for up-to-date properties
     const currentSelectedElement = diagramElements.find(el => el.id === selectedElementId);
 
+    // Resizing an element
     if (isResizingRef.current && currentSelectedElement && selectedElementInitialPropsRef.current) {
       const initialElement = selectedElementInitialPropsRef.current;
       const handleName = resizeHandleNameRef.current;
-      const initialMouseX = dragOffsetRef.current.x;
+      const initialMouseX = dragOffsetRef.current.x; // These are in world coordinates
       const initialMouseY = dragOffsetRef.current.y;
 
       let newX = initialElement.x;
@@ -376,7 +431,7 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
       let newWidth = initialElement.width;
       let newHeight = initialElement.height;
 
-      const dx = mouseX - initialMouseX;
+      const dx = mouseX - initialMouseX; // Delta in world coordinates
       const dy = mouseY - initialMouseY;
 
       switch (handleName) {
@@ -391,8 +446,8 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
         default: break;
       }
 
-      newWidth = Math.max(newWidth, RESIZE_HANDLE_SIZE * 2);
-      newHeight = Math.max(newHeight, RESIZE_HANDLE_SIZE * 2);
+      newWidth = Math.max(newWidth, RESIZE_HANDLE_SIZE * 2 / scale); // Adjust min size by scale
+      newHeight = Math.max(newHeight, RESIZE_HANDLE_SIZE * 2 / scale); // Adjust min size by scale
 
       const updatedProps = { x: newX, y: newY, width: newWidth, height: newHeight };
       onElementChange(currentSelectedElement.id, updatedProps);
@@ -400,8 +455,7 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
 
     } else if (isDraggingRef.current && selectedElementInitialPropsRef.current) {
       // Handle dragging for single or multiple elements
-      // Calculate delta based on initial mouse position (stored in dragOffsetRef.current)
-      const deltaX = mouseX - dragOffsetRef.current.x;
+      const deltaX = mouseX - dragOffsetRef.current.x; // Delta in world coordinates
       const deltaY = mouseY - dragOffsetRef.current.y;
 
       if (selectedElementId) { // Single element drag
@@ -421,7 +475,7 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
           };
         }
         onElementChange(selectedElementId, newElementProps);
-        lastUpdatedElementPropsRef.current = newElementProps; // Store for commit
+        lastUpdatedElementPropsRef.current = newElementProps;
       } else if (selectedElementsIds.length > 0) { // Multi-element drag
         const updatedElementsProps = selectedElementInitialPropsRef.current.map(initialEl => {
           let newProps = {};
@@ -440,9 +494,8 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
           }
           return { id: initialEl.id, ...newProps };
         });
-        // Send multiple updates to parent, but don't commit to history yet
         updatedElementsProps.forEach(props => onElementChange(props.id, props));
-        lastUpdatedElementPropsRef.current = updatedElementsProps; // Store for commit
+        lastUpdatedElementPropsRef.current = updatedElementsProps;
       }
     }
 
@@ -451,7 +504,7 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
     if (canvas) {
       let cursor = 'default';
 
-      if (isDrawingRef.current || selectionBox) { // Drawing a new shape or selection box
+      if (isDrawingRef.current || selectionBox) {
         cursor = 'crosshair';
       } else if (isResizingRef.current) {
         if (currentSelectedElement) {
@@ -467,7 +520,6 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
 
         for (let i = diagramElements.length - 1; i >= 0; i--) {
           const element = diagramElements[i];
-          // Only check handles if it's the single selected element (multi-selection doesn't resize)
           if (element.id === selectedElementId && (element.type === 'rectangle' || element.type === 'oval' || element.type === 'diamond')) {
             const handles = getResizeHandles(element);
             for (const handleName in handles) {
@@ -489,6 +541,9 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
           cursor = hoveredHandle.cursor;
         } else if (hoveredElement) {
           cursor = 'grab';
+        } else {
+          // If nothing is selected and not drawing, allow panning with 'grab' cursor
+          cursor = 'grab';
         }
       } else if (activeTool === TOOL_TYPE.TEXT) {
         cursor = 'text';
@@ -500,10 +555,13 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
   };
 
   const handleMouseUp = (e) => {
+    // Reset panning state
+    isPanningRef.current = false;
+
     const { x: mouseX, y: mouseY } = getMousePos(e);
     const { x: startX, y: startY } = startDrawingPointRef.current;
 
-    // Handle selection box completion
+    // Handle selection box completion (currently disabled for simplicity with pan)
     if (selectionBox) {
       const minX = Math.min(startX, mouseX);
       const minY = Math.min(startY, mouseY);
@@ -511,7 +569,6 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
       const maxY = Math.max(startY, mouseY);
 
       const newlySelectedIds = diagramElements.filter(el => {
-        // Simplified bounding box for hit test with selection box
         let elX, elY, elWidth, elHeight;
         if (el.type === 'line') {
           elX = Math.min(el.startX, el.endX);
@@ -529,9 +586,9 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
                elY < maxY && elY + elHeight > minY;
       }).map(el => el.id);
 
-      onElementsSelect(newlySelectedIds); // Update parent's multi-selection state
-      onElementSelect(null); // Clear single selection when multi-selecting
-      setSelectionBox(null); // Hide selection box
+      onElementsSelect(newlySelectedIds);
+      onElementSelect(null);
+      setSelectionBox(null);
     }
 
     // Finalize drawing a new shape/line
@@ -542,17 +599,15 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
       const x = Math.min(startX, mouseX);
       const y = Math.min(startY, mouseY);
 
-      const MIN_DRAW_THRESHOLD = 5; // A small threshold to distinguish a drag from a click
+      const MIN_DRAW_THRESHOLD = 5 / scale; // Adjust threshold by scale
 
       let shouldCreateElement = true;
 
       if (activeTool === TOOL_TYPE.LINE) {
-        // For a line, if both width AND height are too small, it's just a click
         if (width < MIN_DRAW_THRESHOLD && height < MIN_DRAW_THRESHOLD) {
           shouldCreateElement = false;
         }
-      } else { // For shapes (rectangle, oval, diamond)
-        // For shapes, if either width OR height is too small, don't create
+      } else {
         if (width < MIN_DRAW_THRESHOLD || height < MIN_DRAW_THRESHOLD) {
           shouldCreateElement = false;
         }
@@ -560,9 +615,9 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
 
       if (!shouldCreateElement) {
         isDrawingRef.current = false;
-        potentialSourceElementRef.current = null; // Clear potential source
-        potentialTargetElementRef.current = null; // Clear potential target
-        return; // Don't create tiny elements or accidental clicks
+        potentialSourceElementRef.current = null;
+        potentialTargetElementRef.current = null;
+        return;
       }
 
       switch (activeTool) {
@@ -576,7 +631,6 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
           newElement = { id: generateUniqueId(), type: TOOL_TYPE.DIAMOND, x, y, width, height, label: '', ...DEFAULT_ELEMENT_STYLE };
           break;
         case TOOL_TYPE.LINE:
-          // If a line is being drawn, check for connection points
           const sourceElement = potentialSourceElementRef.current;
           const targetElement = potentialTargetElementRef.current;
 
@@ -589,15 +643,17 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
 
           if (sourceElement) {
             sourceId = sourceElement.id;
-            // Use center of source element as start point if connected
-            finalStartX = sourceElement.x + sourceElement.width / 2;
-            finalStartY = sourceElement.y + sourceElement.height / 2;
+            // Use precise connection point if connected
+            const { x: connX, y: connY } = getShapeConnectionPoint(sourceElement, targetElement ? (targetElement.x + targetElement.width / 2) : mouseX, targetElement ? (targetElement.y + targetElement.height / 2) : mouseY);
+            finalStartX = connX;
+            finalStartY = connY;
           }
           if (targetElement) {
             targetId = targetElement.id;
-            // Use center of target element as end point if connected
-            finalEndX = targetElement.x + targetElement.width / 2;
-            finalEndY = targetElement.y + targetElement.height / 2;
+            // Use precise connection point if connected
+            const { x: connX, y: connY } = getShapeConnectionPoint(targetElement, sourceElement ? (sourceElement.x + sourceElement.width / 2) : startX, sourceElement ? (sourceElement.y + sourceElement.height / 2) : startY);
+            finalEndX = connX;
+            finalEndY = connY;
           }
 
           newElement = {
@@ -608,10 +664,10 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
             endX: finalEndX,
             endY: finalEndY,
             label: '',
-            arrowhead: true, // Default lines to have arrowheads
+            arrowhead: true,
             ...DEFAULT_ELEMENT_STYLE,
-            sourceId: sourceId, // Store connected source element ID
-            targetId: targetId, // Store connected target element ID
+            sourceId: sourceId,
+            targetId: targetId,
           };
           break;
         default:
@@ -619,15 +675,15 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
       }
 
       if (newElement) {
-        onAddElement(newElement); // Add the new element via callback
+        onAddElement(newElement);
       }
     }
 
     // Commit the state to history only when drag/resize ends and there were actual updates
     if ((isDraggingRef.current || isResizingRef.current) && lastUpdatedElementPropsRef.current) {
-      if (Array.isArray(lastUpdatedElementPropsRef.current)) { // Multi-element drag commit
+      if (Array.isArray(lastUpdatedElementPropsRef.current)) {
         onElementChange(null, lastUpdatedElementPropsRef.current, true);
-      } else { // Single element drag/resize commit
+      } else {
         onElementChange(selectedElementId, lastUpdatedElementPropsRef.current, true);
       }
     }
@@ -642,15 +698,14 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
     startDrawingPointRef.current = { x: 0, y: 0 };
     currentMousePosRef.current = { x: 0, y: 0 };
     lastUpdatedElementPropsRef.current = null;
-    potentialSourceElementRef.current = null; // Clear potential source
-    potentialTargetElementRef.current = null; // Clear potential target
+    potentialSourceElementRef.current = null;
+    potentialTargetElementRef.current = null;
   };
 
   // Double-click handler for text editing
   const handleDoubleClick = (e) => {
     const { x: mouseX, y: mouseY } = getMousePos(e);
 
-    // Iterate elements in reverse to find the top-most text element or shape with label
     for (let i = diagramElements.length - 1; i >= 0; i--) {
       const element = diagramElements[i];
       const textContent = element.type === 'text' ? element.text : element.label;
@@ -691,7 +746,7 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
             originalType: element.type
           });
           onElementSelect(element.id);
-          onElementsSelect([]); // Clear multi-selection for text editing
+          onElementsSelect([]);
           return;
         }
       }
@@ -716,28 +771,27 @@ const Canvas = forwardRef(({ diagramElements, selectedElementId, selectedElement
     <div className="relative w-full h-full">
       <canvas
         ref={ref}
-        width={CANVAS_WIDTH}
-        height={CANVAS_HEIGHT}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
         onDoubleClick={handleDoubleClick}
-        className="block bg-f8f8f8 border border-e0e0e0 rounded-lg shadow-md"
+        className="block bg-f8f8f8 border border-e0e0e0 rounded-lg shadow-md w-full h-full"
       ></canvas>
 
       {textInputProps && (
         <textarea
           className="absolute p-1 border border-blue-500 rounded-md resize-none overflow-hidden focus:outline-none"
           style={{
-            left: textInputProps.x,
-            top: textInputProps.y,
-            width: textInputProps.width,
-            height: textInputProps.height,
-            fontSize: textInputProps.fontSize,
+            // Position the textarea based on transformed coordinates
+            left: textInputProps.x * scale + offsetX,
+            top: textInputProps.y * scale + offsetY,
+            width: textInputProps.width * scale,
+            height: textInputProps.height * scale,
+            fontSize: textInputProps.fontSize * scale,
             color: textInputProps.color,
             fontFamily: 'Inter, sans-serif',
-            lineHeight: `${textInputProps.fontSize * 1.2}px`,
+            lineHeight: `${textInputProps.fontSize * 1.2 * scale}px`,
             background: 'rgba(255, 255, 255, 0.9)',
             boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
             zIndex: 20,

@@ -17,7 +17,7 @@ import {
 
 import { geminiService } from '../services/GeminiAIService';
 
-const DiagramApp = ({ user, onLogout, firebaseService }) => { // firebaseService is now destructured from props
+const DiagramApp = ({ user, onLogout, firebaseService }) => {
   const [diagramElements, setDiagramElements] = useState([]);
   const [aiPrompt, setAiPrompt] = useState("Generate a simple flowchart with a start, a process, a decision, and two end points.");
   const [isLoadingAI, setIsLoadingAI] = useState(false);
@@ -268,7 +268,6 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // firebaseService
     setIsLoadingRefineAI(true);
 
     try {
-      // Get the element(s) to refine
       const elementsToRefine = selectedElementId
         ? [diagramElements.find(el => el.id === selectedElementId)]
         : diagramElements.filter(el => selectedElementsIds.includes(el.id));
@@ -279,7 +278,6 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // firebaseService
         return;
       }
 
-      // Convert elements to a simplified JSON string for the AI
       const simplifiedElements = elementsToRefine.map(el => {
         const { id, type, label, text, x, y, width, height, startX, startY, endX, endY, ...rest } = el;
         return { id, type, label: label || text, x, y, width, height, startX, startY, endX, endY };
@@ -314,7 +312,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // firebaseService
   const handleSaveDiagram = async () => {
     setAppMessage('');
     try {
-      await firebaseService.saveDiagram(diagramElements); // Call saveDiagram from props
+      await firebaseService.saveDiagram(diagramElements);
       setAppMessage('Diagram saved successfully!');
     } catch (error) {
       setAppMessage(`Error saving: ${error.message}`);
@@ -325,12 +323,12 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // firebaseService
   const handleLoadDiagram = async () => {
     setAppMessage('');
     try {
-      const loadedData = await firebaseService.loadDiagram(); // Call loadDiagram from props
+      const loadedData = await firebaseService.loadDiagram();
       setDiagramElements(loadedData);
-      pushState(loadedData); // Push loaded state to history
+      pushState(loadedData);
       setAppMessage('Diagram loaded successfully!');
-      setSelectedElementId(null); // Clear selection after loading new diagram
-      setSelectedElementsIds([]); // Clear multi-selection
+      setSelectedElementId(null);
+      setSelectedElementsIds([]);
     } catch (error) {
       setAppMessage(`Error loading: ${error.message}`);
       console.error("Load error:", error);
@@ -398,7 +396,6 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // firebaseService
           const idsToDelete = selectedElementId ? [selectedElementId] : selectedElementsIds;
           let updatedElements = prevElements.filter(el => !idsToDelete.includes(el.id));
           
-          // Also delete any lines connected to the deleted shapes
           updatedElements = updatedElements.filter(el => 
             el.type !== 'line' || (!idsToDelete.includes(el.sourceId) && !idsToDelete.includes(el.targetId))
           );
@@ -453,7 +450,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // firebaseService
           startY: el.startY + offset,
           endX: el.endX + offset,
           endY: el.endY + offset,
-          sourceId: null, // Clear source/target IDs when pasting lines
+          sourceId: null,
           targetId: null,
         };
       } else {
@@ -525,7 +522,6 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // firebaseService
         }
         return el;
       });
-      // Trigger a re-evaluation of line positions if a connected shape's properties change
       const elementsAfterPropertyChange = updatedElements.map(el => {
         if (el.type === 'line' && (el.sourceId || el.targetId)) {
           const sourceShape = updatedElements.find(s => s.id === el.sourceId);
@@ -647,7 +643,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // firebaseService
         )}
       </div>
 
-      <div className="w-full max-w-4xl flex flex-col lg:flex-row gap-6">
+      <div className="w-full max-w-4xl flex flex-col lg:flex-row gap-6 h-[600px]"> {/* Added a fixed height for the canvas container */}
         {/* Toolbar */}
         <div className="lg:w-1/5 bg-white rounded-xl shadow-lg p-4 flex flex-col items-start space-y-3">
           <h2 className="text-xl font-semibold text-gray-800 mb-2">Tools</h2>
@@ -756,7 +752,7 @@ const DiagramApp = ({ user, onLogout, firebaseService }) => { // firebaseService
         </div>
 
         {/* Canvas Area */}
-        <div className="lg:w-3/5 bg-white rounded-xl shadow-lg flex items-center justify-center overflow-hidden relative">
+        <div className="lg:w-3/5 bg-white rounded-xl shadow-lg flex items-center justify-center overflow-hidden relative h-full"> {/* Added h-full */}
           {isLoadingAI && (
             <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-80 z-10 rounded-xl">
               <div className="flex flex-col items-center text-blue-600">

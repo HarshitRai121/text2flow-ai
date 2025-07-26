@@ -1,23 +1,20 @@
 // src/utils/constants.js
 
-export const generateUniqueId = () => crypto.randomUUID();
+// Define a larger virtual canvas size for internal calculations
+// This allows for more complex diagrams without immediately going "off-canvas"
+export const CANVAS_WIDTH = 2000; // Increased virtual width
+export const CANVAS_HEIGHT = 1500; // Increased virtual height
 
-export const CANVAS_WIDTH = 800;
-export const CANVAS_HEIGHT = 500;
+export const RESIZE_HANDLE_SIZE = 8; // Size of the resize handles
 
-export const RESIZE_HANDLE_SIZE = 8;
-
-// Default styling for new elements (can be overridden by AI or properties panel)
 export const DEFAULT_ELEMENT_STYLE = {
   strokeColor: '#000000',
   fillColor: '#FFFFFF',
   lineWidth: 2,
   fontSize: 16,
   color: '#000000', // Text color
-  arrowhead: true, // Default for lines
 };
 
-// --- New: Tool Types ---
 export const TOOL_TYPE = {
   SELECT: 'select',
   RECTANGLE: 'rectangle',
@@ -25,5 +22,9 @@ export const TOOL_TYPE = {
   DIAMOND: 'diamond',
   LINE: 'line',
   TEXT: 'text',
-  // Add more tools here later (e.g., pen, erase)
+};
+
+// Helper to generate unique IDs
+export const generateUniqueId = () => {
+  return 'id_' + Math.random().toString(36).substr(2, 9) + Date.now();
 };
